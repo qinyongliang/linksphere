@@ -1,0 +1,39 @@
+bin/
+build/
+dist/
+package/
+node_modules/
+*.tsbuildinfo
+*.exe
+*.log
+*.tmp
+.superpowers/
+__pycache__/
+scripts/forward-load/**/__pycache__/
+/design/qa/forward-load-run-*/
+
+
+# Local operational records and screenshots must never be published.
+/.learnings/
+/docs/superpowers/
+/design/qa/
+/docs/*-deployment*.md
+/docs/*-deploy*.md
+/docs/http-forward-load-results.md
+/local-only/
+/.github/workflows/deploy-arm64.yml
+
+# Signing private material is local-only; only public X.509 certificates are tracked.
+*.keystore
+*.jks
+*.p12
+*.pfx
+
+# Historical mockups and environment-specific operational helpers stay local.
+/design/
+/web/ai-bastion-design-board.html
+/scripts/deploy_release.py
+/data/
+/agent-cache/
+.env
+.env.local

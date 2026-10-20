@@ -1,0 +1,166 @@
+package server
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+)
+
+func TestUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "ui_e2e.mjs")
+}
+
+func TestMobileConsoleUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, true, "ui_e2e.mjs")
+}
+
+func TestTabFilePathUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "tab_file_path.test.mjs")
+}
+
+func TestDraggableWorkspaceUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "draggable_workspace.test.mjs")
+}
+
+func TestNewTerminalConnectionUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "new_terminal_connection.test.mjs")
+}
+
+func TestAddServiceUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "add_service.test.mjs")
+}
+
+func TestTemporarySSHAuthorizationsUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "temporary_ssh_authorizations.test.mjs")
+}
+
+func TestMobileTemporarySSHAuthorizationsUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, true, "temporary_ssh_authorizations.test.mjs")
+}
+
+func TestMobileActionsUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, true, "mobile_interactions.test.mjs")
+}
+
+func TestControlStylesUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "control_styles.test.mjs")
+}
+
+func TestTunnelTrafficUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "tunnel_traffic.test.mjs")
+}
+
+func TestFileDownloadUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "file_download.test.mjs")
+}
+
+func TestFileUploadUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "file_upload.test.mjs")
+}
+
+func TestFileDownloadViaAgentSSHUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "file_download.test.mjs", true)
+}
+
+func TestFileUploadViaAgentSSHUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "file_upload.test.mjs", true)
+}
+
+func TestFilePreviewUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "file_preview_browser.test.mjs")
+}
+
+func TestFileSelectionUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "file_selection_browser.test.mjs")
+}
+
+func TestPaginationUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "pagination.test.mjs")
+}
+
+func TestAuditHandoffUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "audit_handoff.test.mjs")
+}
+
+func TestRunningOutputUIE2EWithBrowser(t *testing.T) {
+	testUIE2EWithBrowser(t, false, "running_output.test.mjs")
+}
+
+func testUIE2EWithBrowser(t *testing.T, mobileOnly bool, script string, viaAgentSSH ...bool) {
+	nodePath := os.Getenv("GOSSHD_UI_E2E_NODE")
+	playwrightPath := os.Getenv("GOSSHD_UI_E2E_PLAYWRIGHT")
+	browserPath := os.Getenv("GOSSHD_UI_E2E_BROWSER")
+	if nodePath == "" || playwrightPath == "" || browserPath == "" {
+		t.Skip("GOSSHD_UI_E2E_NODE, GOSSHD_UI_E2E_PLAYWRIGHT, and GOSSHD_UI_E2E_BROWSER are required")
+	}
+	app := NewApp(Config{
+		DatabasePath:           filepath.Join(t.TempDir(), "gosshd.db"),
+		SessionCookieName:      "ui_e2e_session",
+		BootstrapAdminPassword: "admin-pass",
+		PublicHost:             "127.0.0.1",
+		PublicSSHPort:          22022,
+	})
+	mux := http.NewServeMux()
+	app.routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	t.Cleanup(func() {
+		if app.store != nil {
+			_ = app.Close()
+		}
+	})
+
+	cmd := exec.CommandContext(context.Background(), nodePath, filepath.Join("web", "e2e", script))
+	cmd.Dir = repoRoot(t)
+	mobileOnlyValue := "0"
+	if mobileOnly {
+		mobileOnlyValue = "1"
+	}
+	cmd.Env = append(os.Environ(),
+		"GOSSHD_UI_E2E_BASE_URL="+srv.URL,
+		"PLAYWRIGHT_REQUIRE_PATH="+playwrightPath,
+		"PLAYWRIGHT_CHROMIUM_EXECUTABLE="+browserPath,
+		"GOSSHD_UI_E2E_MOBILE_ONLY="+mobileOnlyValue,
+	)
+	if script == "file_upload.test.mjs" || script == "file_download.test.mjs" {
+		if err := app.ensureServices(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		user, err := app.store.Repository().GetUserByEmail(context.Background(), "admin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		org, err := app.store.Repository().GetPersonalOrganizationForUser(context.Background(), user.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attachTunnelAgent(t, app, "browser-upload-agent")
+		target := uploadAgentTarget(t, app, user, org, "browser-upload-agent")
+		if len(viaAgentSSH) > 0 && viaAgentSSH[0] {
+			address, closeServer := startTestSFTPServer(t, testSFTPModeSubsystem)
+			defer closeServer()
+			target = tunnelSSHTarget(t, app, user, org, "browser-delegated-ssh", address, target.ID)
+		}
+		cmd.Env = append(cmd.Env, "GOSSHD_UPLOAD_TARGET="+target.ID, "GOSSHD_UPLOAD_DIR="+t.TempDir())
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ui e2e failed: %v\n%s", err, out)
+	}
+	if testing.Verbose() {
+		t.Logf("%s", out)
+	}
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Clean(filepath.Join(wd, "..", ".."))
+}

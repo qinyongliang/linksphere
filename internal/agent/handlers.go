@@ -1,0 +1,138 @@
+package agent
+
+import (
+	"bufio"
+	"context"
+	"github.com/qinyongliang/linksphere/internal/desktop"
+	"github.com/qinyongliang/linksphere/internal/forward"
+	"io"
+	"log"
+	"net"
+	"sync"
+
+	"github.com/qinyongliang/linksphere/internal/protocol"
+
+	"github.com/hashicorp/yamux"
+	"github.com/pkg/sftp"
+	"time"
+)
+
+func (c *Client) handleStream(stream io.ReadWriteCloser) {
+	c.handleStreamWithSession(stream, nil)
+}
+
+func (c *Client) handleStreamWithSession(stream io.ReadWriteCloser, session *yamux.Session) {
+	defer stream.Close()
+	reader := bufio.NewReader(stream)
+	req, err := protocol.ReadJSONLine[protocol.StreamRequest](reader)
+	if err != nil {
+		return
+	}
+	switch req.Type {
+	case protocol.StreamDesktop:
+		_ = desktop.Serve(context.Background(), stream, c.cfg.Desktop)
+	case protocol.StreamForwardSync:
+		c.handleForwardSync(stream, req)
+	case protocol.StreamForwardLink:
+		c.handleForwardLink(stream, reader, req)
+	case protocol.StreamForwardPeer:
+		c.handleForwardPeer(stream, reader, req)
+	case protocol.StreamFileSession:
+		c.handleFileSession(stream, reader, req)
+	case protocol.StreamFileUpload:
+		c.handleFileUpload(stream, reader, req)
+	case protocol.StreamFileDownload:
+		c.handleFileDownload(stream, reader, req)
+	case protocol.StreamTunnelPeer:
+		c.handleTunnelPeer(stream, reader, req)
+	case protocol.StreamTunnelListen:
+		c.handleTunnelListen(stream, reader, session, req)
+	case protocol.StreamExec, protocol.StreamShell:
+		c.handleCommand(stream, reader, req)
+	case protocol.StreamSFTP:
+		c.handleSFTP(stream, reader)
+	case protocol.StreamTCP, protocol.StreamUDP:
+		c.handlePort(stream, reader, req.Target, req.Type)
+	default:
+		_ = protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: false, Error: "unsupported stream type"})
+	}
+}
+
+func (c *Client) handleSFTP(stream io.ReadWriteCloser, reader *bufio.Reader) {
+	if err := protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: true}); err != nil {
+		return
+	}
+	server, err := sftp.NewServer(readWriteCloser{Reader: reader, Writer: stream, Closer: stream}, sftp.WithServerWorkingDirectory(c.cfg.Root))
+	if err != nil {
+		log.Printf("sftp server init failed: %v", err)
+		return
+	}
+	if err := server.Serve(); err != nil && err != io.EOF {
+		log.Printf("sftp server failed: %v", err)
+	}
+	_ = server.Close()
+}
+
+type readWriteCloser struct {
+	io.Reader
+	io.Writer
+	io.Closer
+}
+
+func (c *Client) handlePort(stream io.ReadWriteCloser, reader *bufio.Reader, target, network string) {
+	if target == "" {
+		_ = protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: false, Error: "missing target"})
+		return
+	}
+	var conn net.Conn
+	var err error
+	if network == "udp" {
+		conn, err = forward.DialUDP(context.Background(), target)
+	} else {
+		conn, err = net.DialTimeout("tcp", target, 10*time.Second)
+	}
+	if err != nil {
+		_ = protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: false, Error: err.Error()})
+		return
+	}
+	defer conn.Close()
+	if err := protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: true}); err != nil {
+		return
+	}
+	if muxStream, ok := stream.(*yamux.Stream); ok {
+		bridgeTunnel(conn, &tunnelStream{Reader: reader, stream: muxStream})
+	} else {
+		bridge(conn, readWriteCloser{Reader: reader, Writer: stream, Closer: stream})
+	}
+}
+
+func bridge(a io.ReadWriter, b io.ReadWriteCloser) {
+	var closeOnce sync.Once
+	closeBoth := func() {
+		closeOnce.Do(func() {
+			if c, ok := a.(io.Closer); ok {
+				_ = c.Close()
+			}
+			_ = b.Close()
+		})
+	}
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(b, a)
+		closeBoth()
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(a, b)
+		closeBoth()
+		done <- struct{}{}
+	}()
+	<-done
+}
+
+func closeWriter(v any) error {
+	if c, ok := v.(interface{ CloseWrite() error }); ok {
+		return c.CloseWrite()
+	}
+	return nil
+}

@@ -1,0 +1,1936 @@
+import { normalizeRemotePath } from "../remotePath";
+import { useQuery } from "@tanstack/react-query";
+import Editor, { loader } from "@monaco-editor/react";
+import type { BeforeMount, Monaco, OnMount } from "@monaco-editor/react";
+import * as monaco from "monaco-editor";
+import "monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution";
+import "monaco-editor/esm/vs/basic-languages/csharp/csharp.contribution";
+import "monaco-editor/esm/vs/basic-languages/css/css.contribution";
+import "monaco-editor/esm/vs/basic-languages/dart/dart.contribution";
+import "monaco-editor/esm/vs/basic-languages/dockerfile/dockerfile.contribution";
+import "monaco-editor/esm/vs/basic-languages/elixir/elixir.contribution";
+import "monaco-editor/esm/vs/basic-languages/go/go.contribution";
+import "monaco-editor/esm/vs/basic-languages/graphql/graphql.contribution";
+import "monaco-editor/esm/vs/basic-languages/hcl/hcl.contribution";
+import "monaco-editor/esm/vs/basic-languages/html/html.contribution";
+import "monaco-editor/esm/vs/basic-languages/ini/ini.contribution";
+import "monaco-editor/esm/vs/basic-languages/java/java.contribution";
+import "monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution";
+import "monaco-editor/esm/vs/basic-languages/kotlin/kotlin.contribution";
+import "monaco-editor/esm/vs/basic-languages/less/less.contribution";
+import "monaco-editor/esm/vs/basic-languages/lua/lua.contribution";
+import "monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution";
+import "monaco-editor/esm/vs/basic-languages/perl/perl.contribution";
+import "monaco-editor/esm/vs/basic-languages/php/php.contribution";
+import "monaco-editor/esm/vs/basic-languages/powershell/powershell.contribution";
+import "monaco-editor/esm/vs/basic-languages/protobuf/protobuf.contribution";
+import "monaco-editor/esm/vs/basic-languages/python/python.contribution";
+import "monaco-editor/esm/vs/basic-languages/r/r.contribution";
+import "monaco-editor/esm/vs/basic-languages/ruby/ruby.contribution";
+import "monaco-editor/esm/vs/basic-languages/rust/rust.contribution";
+import "monaco-editor/esm/vs/basic-languages/scala/scala.contribution";
+import "monaco-editor/esm/vs/basic-languages/scss/scss.contribution";
+import "monaco-editor/esm/vs/basic-languages/shell/shell.contribution";
+import "monaco-editor/esm/vs/basic-languages/solidity/solidity.contribution";
+import "monaco-editor/esm/vs/basic-languages/sql/sql.contribution";
+import "monaco-editor/esm/vs/basic-languages/swift/swift.contribution";
+import "monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution";
+import "monaco-editor/esm/vs/basic-languages/xml/xml.contribution";
+import "monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution";
+import "monaco-editor/esm/vs/language/json/monaco.contribution";
+import "monaco-editor-nginx";
+import { Terminal } from "@xterm/xterm";
+import { ArrowLeft, Cpu, Globe, HardDrive, Maximize, Minimize, Monitor, Network, RefreshCw, RotateCcw, Save, Server, SplitSquareHorizontal, SplitSquareVertical, X } from "lucide-react";
+import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { api } from "../api";
+import { MachinePicker, serverTitle } from "../components/MachinePicker";
+import { ManualReviewPoller } from "../components/ManualReviewPoller";
+import { DockDragHandle, DockPanelToggle, DockWorkspace } from "../components/DockWorkspace";
+import { BrandMark, ConfirmDialog, Segmented } from "../components/ui";
+import { useI18n } from "../i18n";
+import { appDescription, appName, documentTitle } from "../lib/branding";
+import { MOBILE_TERMINAL_KEY_ROWS, TERMINAL_SHORTCUT_LABELS, applyTerminalModifier, terminalShortcutSequence } from "../terminalShortcuts";
+import type { TerminalModifier, TerminalShortcutKey } from "../terminalShortcuts";
+import { useTheme } from "../theme";
+import type { ConsoleData, FileEntry, Target, TargetSystemSnapshot, TargetSystemUsage } from "../types";
+import { targetEndpoint } from "../utils";
+import { FileManager } from "./FileManager";
+import { FALLBACK_EDITOR_LANGUAGE, inferEditorLanguage } from "../fileEditor";
+import { FilePreviewPane } from "../components/FilePreviewPane";
+import { contentPaneTree, defaultWorkspaceLayout, findPane, firstLeafID, newPaneID, paneLeaves, readWorkspacePreferences, removePane, restoreWorkspace, saveWorkspace, splitPane } from "../workspaceLayout";
+import type { EditorPaneNode, PreviewPaneNode, PaneLeaf, PaneNode, PaneSide, TerminalPaneNode } from "../workspaceLayout";
+import aiCollaborationIcon from "../assets/ai-collaboration.png";
+
+let monacoConfigured = false;
+loader.config({ monaco });
+
+type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
+type MetricSample = {
+  at: number;
+  cpu: number;
+  memory: number;
+  swap: number;
+  rx: number;
+  tx: number;
+  network: Record<string, { rx: number; tx: number }>;
+};
+type ConnectionTab = {
+  id: string;
+  targetID: string;
+  layout: PaneNode;
+  activePaneID: string;
+  filePath: string;
+  filePathInitialized?: boolean;
+  pendingCommand?: string;
+};
+
+const DEFAULT_COLS = 120;
+const DEFAULT_ROWS = 32;
+const SYSTEM_METRICS_REFRESH_MS = 5000;
+const SYSTEM_DISK_REFRESH_MS = 60_000;
+const MAX_SYSTEM_SAMPLES = 60;
+const EDITOR_PANE_CLOSE_REQUEST = "gosshd-editor-pane-close-request";
+const TERMINAL_SESSION_STORAGE_PREFIX = "gosshd-terminal-session:";
+type TerminalPanelProps = {
+  data: ConsoleData;
+  target: Target;
+  paneID: string;
+  restoreSession?: boolean;
+  active?: boolean;
+  isFullscreen: boolean;
+  onFullscreenChange: (value: boolean | ((previous: boolean) => boolean)) => void;
+  onClose?: () => void;
+  onSplit?: (side: PaneSide) => void;
+  pendingCommand?: string;
+  onPendingCommandConsumed?: () => void;
+  onDirectoryChange?: (directory: string) => void;
+  manualReview?: boolean;
+  dockable?: boolean;
+};
+
+type TerminalRuntime = {
+  paneID: string;
+  targetID: string;
+  terminal: Terminal | null;
+  socket: WebSocket | null;
+  heartbeat: number | null;
+  status: ConnectionStatus;
+  error: string;
+  dims: { cols: number; rows: number };
+  sessionID: string;
+  cwd: string;
+  aiEnabled: boolean;
+  mobileModifier: TerminalModifier | null;
+  pendingCommand: string;
+  active: boolean;
+  disposed: boolean;
+  onClose?: () => void;
+  onPendingCommandConsumed?: () => void;
+  connect?: () => void;
+  fit?: () => void;
+  outputQueue: string[];
+  outputFrame: number | null;
+  listeners: Set<() => void>;
+  disposables: Array<{ dispose: () => void }>;
+};
+
+const terminalRuntimes = new Map<string, TerminalRuntime>();
+
+export function ConnectPage({ data }: { data: ConsoleData }) {
+  const { targetID } = useParams<{ targetID: string }>();
+  const { t } = useI18n();
+  const target = data.targets.find((item) => item.id === targetID);
+
+  if (!targetID) {
+    return <ConnectWorkspace data={data} targets={data.targets} />;
+  }
+  if (!target) {
+    return (
+      <main className="connect-workspace empty">
+        <section className="connect-error">
+          <div className="connect-error-icon"><Server /></div>
+          <h2>{t("connect")}</h2>
+          <p>{t("serviceEmptyBody")}</p>
+          <a className="button-link" href="/targets">
+            <ArrowLeft />{t("connectBack")}
+          </a>
+        </section>
+      </main>
+    );
+  }
+
+  return <ConnectWorkspace data={data} target={target} targets={data.targets} />;
+}
+
+export function ConnectWorkspace({ data, target, targets }: { data: ConsoleData; target?: Target; targets: Target[] }) {
+  const { t, locale, setLocale } = useI18n();
+  const { theme, setTheme } = useTheme();
+  const navigate = useNavigate();
+  const terminalFocusedByDefault = shouldFocusTerminalByDefault();
+  const [mobileLayout] = useState(isMobileViewport);
+  const layoutStorageKey = `gosshd-workspace-layout:v1:${data.user.id}:${data.activeOrg.id}:${mobileLayout ? "mobile" : "desktop"}`;
+  const [hostOpen, setHostOpen] = useState(() => readWorkspacePreferences(layoutStorageKey)?.hostOpen ?? !terminalFocusedByDefault);
+  const [filesOpen, setFilesOpen] = useState(() => readWorkspacePreferences(layoutStorageKey)?.filesOpen ?? !terminalFocusedByDefault);
+  const [terminalFullscreen, setTerminalFullscreen] = useState(false);
+  const initialConnectionIsFresh = useRef(getConnectNewParam()).current;
+  const createConnectionTab = (targetID: string, command = "", restoreSession = false) => newConnectionTab(targetID, command, restoreSession, layoutStorageKey, mobileLayout);
+  const [tabs, setTabs] = useState<ConnectionTab[]>(() => target ? [createConnectionTab(target.id, getConnectCommandParam(), !initialConnectionIsFresh)] : []);
+  const [activeTabID, setActiveTabID] = useState(() => tabs[0]?.id || "");
+  const [tabMenu, setTabMenu] = useState<{ tabID: string; x: number; y: number } | null>(null);
+  const [switcherOpenSignal, setSwitcherOpenSignal] = useState(0);
+  const expectedRouteTabIDRef = useRef("");
+  const suppressedRouteTargetIDRef = useRef("");
+  const seenOpenMessageIDsRef = useRef<Set<string>>(new Set());
+  const activeTab = tabs.find((item) => item.id === activeTabID) || tabs[0] || null;
+  const activePane = activeTab ? findPane(activeTab.layout, activeTab.activePaneID) : null;
+  const activeTargetID = activePane && activePane.type !== "split" ? activePane.targetID : activeTab?.targetID;
+  const activeTarget = (activeTargetID ? targets.find((item) => item.id === activeTargetID) : null) || target || null;
+  const openTabs = tabs
+    .map((tab) => ({ tab, target: targets.find((item) => item.id === tab.targetID) }))
+    .filter((item): item is { tab: ConnectionTab; target: Target } => Boolean(item.target));
+  const hasOpenTabs = openTabs.length > 0;
+  const endpoint = activeTarget ? targetEndpoint(activeTarget) : "";
+  const name = appName(data.runtime);
+  const description = appDescription(data.runtime, t("shellProduct"));
+  const routePendingCommand = getConnectCommandParam();
+
+  useEffect(() => {
+    if (!activeTab) return;
+    saveWorkspace(layoutStorageKey, activeTab.targetID, activeTab.layout, { hostOpen, filesOpen });
+  }, [activeTab?.layout, activeTab?.targetID, hostOpen, filesOpen, layoutStorageKey]);
+
+  useEffect(() => {
+    if (initialConnectionIsFresh) clearConnectParam("new");
+  }, [initialConnectionIsFresh]);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const sync = () => document.documentElement.style.setProperty("--connect-viewport-height", `${viewport.height}px`);
+    sync();
+    viewport.addEventListener("resize", sync);
+    return () => {
+      viewport.removeEventListener("resize", sync);
+      document.documentElement.style.removeProperty("--connect-viewport-height");
+    };
+  }, []);
+
+  const system = useQuery({
+    queryKey: ["target-system", activeTarget?.id || ""],
+    queryFn: () => api.targetSystem(activeTarget!.id),
+    enabled: Boolean(activeTarget),
+    staleTime: Infinity,
+    retry: 1,
+  });
+  const systemMetrics = useQuery({
+    queryKey: ["target-system", activeTarget?.id || "", "metrics"],
+    queryFn: () => api.targetSystemMetrics(activeTarget!.id),
+    enabled: Boolean(activeTarget),
+    refetchInterval: SYSTEM_METRICS_REFRESH_MS,
+    staleTime: 4000,
+    retry: 1,
+  });
+  const systemFilesystems = useQuery({
+    queryKey: ["target-system", activeTarget?.id || "", "filesystems"],
+    queryFn: () => api.targetSystemFilesystems(activeTarget!.id),
+    enabled: Boolean(activeTarget),
+    refetchInterval: SYSTEM_DISK_REFRESH_MS,
+    staleTime: SYSTEM_DISK_REFRESH_MS - 1000,
+    retry: 1,
+  });
+  const systemSnapshot = useMemo(
+    () => mergeSystemSnapshot(system.data, systemMetrics.data, systemFilesystems.data),
+    [system.data, systemMetrics.data, systemFilesystems.data],
+  );
+  const refreshSystem = () => {
+    void system.refetch();
+    void systemMetrics.refetch();
+    void systemFilesystems.refetch();
+  };
+
+  const appendConnectionTab = (nextTargetID: string, command = "") => {
+    const next = createConnectionTab(nextTargetID, command);
+    expectedRouteTabIDRef.current = next.id;
+    suppressedRouteTargetIDRef.current = "";
+    setTabs((current) => [...current, next]);
+    setActiveTabID(next.id);
+    navigate(`/targets/${nextTargetID}/connect`, { replace: true });
+  };
+
+  useEffect(() => {
+    if (!target) return;
+    if (expectedRouteTabIDRef.current) {
+      const expectedTab = tabs.find((tab) => tab.id === expectedRouteTabIDRef.current);
+      if (expectedTab?.targetID === target.id && activeTab?.id === expectedTab.id) expectedRouteTabIDRef.current = "";
+      return;
+    }
+    if (!activeTab) return;
+    if (suppressedRouteTargetIDRef.current === target.id) return;
+    if (activeTab.targetID === target.id) return;
+    const existing = tabs.find((item) => item.targetID === target.id);
+    if (existing) {
+      setActiveTabID(existing.id);
+      return;
+    }
+    const next = createConnectionTab(target.id, getConnectCommandParam());
+    expectedRouteTabIDRef.current = next.id;
+    setActiveTabID(next.id);
+    setTabs((current) => [...current, next]);
+  }, [activeTab?.targetID, tabs, target]);
+
+  useEffect(() => {
+    const openFromMessage = (raw: unknown) => {
+      const message = raw as { type?: string; targetID?: string; command?: string; messageID?: string } | null;
+      if (!message || message.type !== "gosshd-connect-open-target" || !message.targetID) return;
+      if (!targets.some((item) => item.id === message.targetID)) return;
+      if (message.messageID) {
+        if (seenOpenMessageIDsRef.current.has(message.messageID)) return;
+        seenOpenMessageIDsRef.current.add(message.messageID);
+        if (seenOpenMessageIDsRef.current.size > 100) {
+          const recent = Array.from(seenOpenMessageIDsRef.current).slice(-50);
+          seenOpenMessageIDsRef.current.clear();
+          for (const id of recent) seenOpenMessageIDsRef.current.add(id);
+        }
+      }
+      appendConnectionTab(message.targetID, message.command || "");
+    };
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      openFromMessage(event.data);
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== "gosshd-connect-open" || !event.newValue) return;
+      try {
+        openFromMessage(JSON.parse(event.newValue));
+      } catch {
+        // Ignore malformed messages from stale tabs.
+      }
+    };
+    window.addEventListener("message", onMessage);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [targets]);
+
+  useEffect(() => {
+    document.title = documentTitle(activeTarget ? serverTitle(activeTarget) : "", data.runtime);
+  }, [activeTarget, data.runtime]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const clearOnline = () => {
+      try {
+        window.localStorage.removeItem("gosshd-connect-window-online");
+      } catch {
+        // Ignore storage failures during page teardown.
+      }
+    };
+    const markOnline = () => {
+      window.localStorage.setItem("gosshd-connect-window-online", JSON.stringify({ at: Date.now() }));
+    };
+    markOnline();
+    const timer = window.setInterval(markOnline, 1000);
+    window.addEventListener("pagehide", clearOnline);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("pagehide", clearOnline);
+      clearOnline();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (data.runtime.client_mode) return;
+    const promptOnUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", promptOnUnload);
+    return () => window.removeEventListener("beforeunload", promptOnUnload);
+  }, [data.runtime.client_mode]);
+
+  useEffect(() => {
+    const onPointerDown = () => setTabMenu(null);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTabMenu(null);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
+
+  const activateTarget = (nextTargetID: string) => {
+    appendConnectionTab(nextTargetID);
+  };
+
+  const updateActiveTab = (updater: (tab: ConnectionTab) => ConnectionTab) => {
+    setTabs((current) => current.map((tab) => tab.id === activeTabID ? updater(tab) : tab));
+  };
+
+  const splitTabIntoActiveTab = (sourceTabID: string, side: PaneSide) => {
+    if (!activeTab || sourceTabID === activeTab.id) return;
+    setTabMenu(null);
+    setTabs((current) => {
+      const source = current.find((item) => item.id === sourceTabID);
+      const destination = current.find((item) => item.id === activeTabID);
+      if (!source || !destination || source.id === destination.id) return current;
+      const sourceContent = contentPaneTree(source.layout);
+      if (!sourceContent) return current;
+      const nextLayout = splitPane(destination.layout, destination.activePaneID, sourceContent, side);
+      return current
+        .filter((item) => item.id !== source.id)
+        .map((item) => item.id === destination.id ? {
+          ...item,
+          layout: nextLayout,
+          activePaneID: destination.activePaneID,
+        } : item);
+    });
+    scheduleAllTerminalFits();
+  };
+
+  const closeActivePane = () => {
+    if (!activeTab) return;
+    const pane = findPane(activeTab.layout, activeTab.activePaneID);
+    if (pane?.type === "editor") {
+      window.dispatchEvent(new CustomEvent(EDITOR_PANE_CLOSE_REQUEST, { detail: { paneID: pane.id } }));
+      return;
+    }
+    closePane(activeTab.id, activeTab.activePaneID);
+  };
+
+  const closePane = (tabID: string, paneID: string) => {
+    const tab = tabs.find((item) => item.id === tabID);
+    if (tab) saveWorkspace(layoutStorageKey, tab.targetID, tab.layout, { hostOpen, filesOpen });
+    if (tab && paneLeaves(tab.layout).filter((pane) => pane.type === "terminal" || pane.type === "editor" || pane.type === "preview").length === 1) {
+      closeTabs("one", tabID);
+      return;
+    }
+    if (tab) disposePaneRuntime(findPane(tab.layout, paneID));
+    setTabs((current) => current.map((tab) => {
+      if (tab.id !== tabID) return tab;
+      const result = removePane(tab.layout, paneID);
+      if (!result.node) return tab;
+      const fallbackID = result.activePaneID || firstLeafID(result.node);
+      const fallbackPane = findPane(result.node, fallbackID);
+      return { ...tab, layout: result.node, activePaneID: fallbackID, targetID: fallbackPane && fallbackPane.type !== "split" ? fallbackPane.targetID : tab.targetID };
+    }));
+    scheduleAllTerminalFits();
+  };
+
+  const openEditorForActiveTarget = (filePath: string) => {
+    if (!activeTab || !activeTarget) return;
+    const paneTargetID = activeTarget.id;
+    const editorPane: EditorPaneNode = { type: "editor", id: newPaneID("editor"), targetID: paneTargetID, path: filePath };
+    updateActiveTab((tab) => ({
+      ...tab,
+      layout: splitPane(tab.layout, tab.activePaneID, editorPane, "right"),
+      activePaneID: editorPane.id,
+    }));
+  };
+
+  const openPreviewForActiveTarget = (entry: FileEntry) => {
+    if (!activeTab || !activeTarget) return;
+    const previewPane: PreviewPaneNode = { type: "preview", id: newPaneID("preview"), targetID: activeTarget.id, path: entry.path, size: entry.size };
+    updateActiveTab((tab) => {
+      const existing = paneLeaves(tab.layout).find((pane) => pane.type === "preview" && pane.targetID === previewPane.targetID && pane.path === entry.path);
+      return existing ? { ...tab, activePaneID: existing.id } : {
+        ...tab, layout: splitPane(tab.layout, tab.activePaneID, previewPane, "right"), activePaneID: previewPane.id,
+      };
+    });
+  };
+
+  const closeTabs = (mode: "one" | "left" | "right" | "others" | "all", tabID: string) => {
+    setTabMenu(null);
+    setTabs((current) => {
+      const index = current.findIndex((item) => item.id === tabID);
+      if (index < 0) return current;
+      const closedRouteTarget = current[index]?.targetID || "";
+      const closingActive = activeTabID === tabID || (mode !== "one" && tabSelectionIncludes(current, index, mode, activeTabID));
+      let next = current;
+      if (mode === "one") next = current.filter((item) => item.id !== tabID);
+      if (mode === "left") next = current.slice(index);
+      if (mode === "right") next = current.slice(0, index + 1);
+      if (mode === "others") next = [current[index]];
+      if (mode === "all") next = [];
+
+      for (const tab of current) {
+        if (!next.some((item) => item.id === tab.id)) {
+          saveWorkspace(layoutStorageKey, tab.targetID, tab.layout, { hostOpen, filesOpen });
+          disposePaneRuntime(tab.layout);
+        }
+      }
+
+      if (!next.length) {
+        suppressedRouteTargetIDRef.current = closedRouteTarget || target?.id || "";
+        setActiveTabID("");
+        setTerminalFullscreen(false);
+        window.setTimeout(() => navigate("/connect", { replace: true }), 0);
+        return next;
+      }
+      if (closingActive || !next.some((item) => item.id === activeTabID)) {
+        const fallback = next[Math.min(index, next.length - 1)];
+        expectedRouteTabIDRef.current = fallback.id;
+        suppressedRouteTargetIDRef.current = closedRouteTarget;
+        setActiveTabID(fallback.id);
+        window.setTimeout(() => navigate(`/targets/${fallback.targetID}/connect`, { replace: true }), 0);
+      }
+      return next;
+    });
+    scheduleAllTerminalFits();
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isClientMode = Boolean(data.runtime.client_mode);
+      const openSwitcher = isClientMode
+        ? event.ctrlKey && !event.altKey && !event.metaKey && keyMatches(event, "n", "KeyN")
+        : event.altKey && !event.ctrlKey && !event.metaKey && keyMatches(event, "n", "KeyN");
+      const closeCurrentPane = isClientMode
+        ? event.ctrlKey && !event.altKey && !event.metaKey && keyMatches(event, "w", "KeyW")
+        : event.altKey && !event.ctrlKey && !event.metaKey && keyMatches(event, "w", "KeyW");
+      const closeDisconnectedPane = isClientMode
+        ? event.ctrlKey && !event.altKey && !event.metaKey && keyMatches(event, "d", "KeyD")
+        : event.altKey && !event.ctrlKey && !event.metaKey && keyMatches(event, "d", "KeyD");
+
+      if (openSwitcher) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat) return;
+        setTabMenu(null);
+        setSwitcherOpenSignal((value) => value + 1);
+        return;
+      }
+      if (closeCurrentPane || closeDisconnectedPane) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat) return;
+        closeActivePane();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [activeTab?.id, activeTab?.activePaneID, data.runtime.client_mode]);
+
+  const resetLayout = () => {
+    if (!activeTab) return;
+    updateActiveTab((tab) => ({ ...tab, layout: defaultWorkspaceLayout(contentPaneTree(tab.layout)!, tab.targetID, mobileLayout) }));
+    setHostOpen(!terminalFocusedByDefault);
+    setFilesOpen(!terminalFocusedByDefault);
+  };
+
+  return (
+    <main className={`connect-workspace ${terminalFullscreen ? "terminal-fullscreen-active" : ""} ${hasOpenTabs ? "" : "no-tabs"}`}>
+      <header className="connect-appbar">
+        <Link className="connect-appbar-brand" to="/" aria-label={name}>
+          <BrandMark branding={data.runtime} className="connect-appbar-mark" />
+          <div className="connect-appbar-title">
+            <strong>{name}</strong>
+            <span>{description}</span>
+          </div>
+        </Link>
+
+        <MachinePicker targets={targets} folders={data.targetFolders} currentTargetID={activeTarget?.id || ""} openSignal={switcherOpenSignal} onOpenTarget={activateTarget} />
+
+        {activeTarget && <div className="connect-appbar-host">
+          <Server />
+          <div>
+            <strong>{activeTarget.name}</strong>
+            <code>{activeTarget.alias}</code>
+          </div>
+        </div>}
+
+        {activeTarget && <div className="connect-appbar-meta">
+          <span className="connect-appbar-endpoint"><Globe />{endpoint}</span>
+          <span className="connect-appbar-type">
+            {activeTarget.target_type === "agent" ? <Monitor /> : <HardDrive />}
+            {activeTarget.target_type === "agent" ? t("privateNode") : t("serviceDirect")}
+          </span>
+        </div>}
+
+        <div className="connect-appbar-actions">
+          {activeTab && <button type="button" className="icon-button" onClick={resetLayout} title={t("connectResetLayout")} aria-label={t("connectResetLayout")}><RotateCcw /></button>}
+          <Segmented value={locale} items={[["en", "EN"], ["zh-CN", t("languageChinese")]]} onChange={(value) => setLocale(value as "en" | "zh-CN")} />
+          <Segmented value={theme} items={[["dark", t("themeDark")], ["light", t("themeLight")]]} onChange={(value) => setTheme(value as "light" | "dark")} />
+        </div>
+      </header>
+      <ConnectionTabs
+        tabs={openTabs}
+        activeTabID={activeTab?.id || ""}
+        menu={tabMenu}
+        onActivate={(tab) => {
+          expectedRouteTabIDRef.current = tab.id;
+          setActiveTabID(tab.id);
+          navigate(`/targets/${tab.targetID}/connect`, { replace: true });
+        }}
+        onClose={(tabID) => closeTabs("one", tabID)}
+        onMenu={(tabID, point) => setTabMenu({ tabID, ...point })}
+        onMenuAction={closeTabs}
+        onSplitTab={splitTabIntoActiveTab}
+      />
+
+      <section className="connect-body dock-body">
+        {hasOpenTabs ? tabs.map((tab) => {
+          const selectedPane = findPane(tab.layout, tab.activePaneID);
+          const tabTarget = targets.find((item) => item.id === (selectedPane && selectedPane.type !== "split" ? selectedPane.targetID : tab.targetID));
+          const tabActive = tab.id === activeTabID;
+          const collapsed = new Set(paneLeaves(tab.layout).filter((pane) => (pane.type === "host" && !hostOpen) || (pane.type === "files" && !filesOpen)).map((pane) => pane.id));
+          return <div key={tab.id} className={`terminal-tab-layer ${tabActive ? "active" : "inactive"}`}>
+            <DockWorkspace
+              layout={tab.layout}
+              active={tabActive}
+              collapsed={collapsed}
+              fullscreenPaneID={terminalFullscreen && tabActive ? tab.activePaneID : undefined}
+              onLayoutChange={(layout) => {
+                setTabs((current) => current.map((item) => item.id === tab.id ? { ...item, layout } : item));
+                scheduleAllTerminalFits();
+              }}
+              renderPane={(pane) => {
+                if (pane.type === "host") return <aside className={`connect-host-panel ${hostOpen ? "" : "collapsed"}`}>
+                  {hostOpen ? <>
+                    <header className="connect-zone-head host-zone-head">
+                      <DockDragHandle paneID={pane.id}><Monitor />{t("connectHostInfo")}</DockDragHandle>
+                      <div className="host-panel-actions">
+                        <button type="button" className="icon-button" onClick={refreshSystem} disabled={system.isFetching || systemMetrics.isFetching || systemFilesystems.isFetching} title={t("commonRefresh")} aria-label={t("commonRefresh")}><RefreshCw /></button>
+                        <DockPanelToggle paneID={pane.id} open onToggle={() => setHostOpen(false)} />
+                      </div>
+                    </header>
+                    <div className="connect-host-body">
+                      {tabTarget && <dl className="connect-host-list">
+                        <div><dt>{t("serviceName")}</dt><dd>{tabTarget.name}</dd></div>
+                        <div><dt>{t("serviceAlias")}</dt><dd><code>{tabTarget.alias}</code></dd></div>
+                        <div><dt>{t("targetHost")}</dt><dd>{tabTarget.host || "-"}</dd></div>
+                        <div><dt>{t("targetPort")}</dt><dd>{tabTarget.port || 22}</dd></div>
+                        <div><dt>{t("serviceRemoteUser")}</dt><dd>{tabTarget.remote_username}</dd></div>
+                        <div><dt>{t("commonTag")}</dt><dd>{(tabTarget.tags || []).join(", ") || "-"}</dd></div>
+                      </dl>}
+                      {tabTarget && <SystemSnapshotContent targetID={tabTarget.id} snapshot={tabActive ? systemSnapshot : undefined} sampleSnapshot={tabActive ? systemMetrics.data || system.data : undefined} isLoading={system.isLoading} error={system.error || systemMetrics.error || systemFilesystems.error} />}
+                    </div>
+                  </> : <div className="dock-collapsed-tools"><DockDragHandle paneID={pane.id} /><DockPanelToggle paneID={pane.id} open={false} onToggle={() => setHostOpen(true)}>{t("connectHostInfo")}</DockPanelToggle></div>}
+                </aside>;
+                if (pane.type === "files") return <div className={`connect-zone files-zone ${filesOpen ? "" : "collapsed"}`}>
+                  {filesOpen ? <>
+                    <div className="connect-zone-head">
+                      <DockDragHandle paneID={pane.id}><HardDrive />{t("connectFilesTitle")}</DockDragHandle>
+                      <DockPanelToggle paneID={pane.id} open onToggle={() => setFilesOpen(false)} />
+                    </div>
+                    {tabTarget ? <FileManager target={tabTarget} path={tab.filePath} onPathChange={(filePath, source) => setTabs((current) => current.map((item) => item.id === tab.id ? { ...item, filePath, filePathInitialized: item.filePathInitialized || source !== "resolved" } : item))} system={tabActive ? systemSnapshot : undefined} nativeOpen={Boolean(data.runtime.client_mode)} onEditFile={openEditorForActiveTarget} onPreviewFile={openPreviewForActiveTarget} /> : <div className="connect-zone-empty"><span>{t("connectFilesNoOpenTabs")}</span></div>}
+                  </> : <div className="dock-collapsed-tools"><DockDragHandle paneID={pane.id} /><DockPanelToggle paneID={pane.id} open={false} onToggle={() => setFilesOpen(true)}>{t("connectFilesTitle")}</DockPanelToggle></div>}
+                </div>;
+                return <PaneTree
+                  data={data}
+                  node={pane}
+                  targets={targets}
+                  activePaneID={tab.activePaneID}
+                  isFullscreen={terminalFullscreen && tabActive}
+                  tabActive={tabActive}
+                  pendingCommand={tabActive ? (tab.pendingCommand || routePendingCommand) : ""}
+                  onPendingCommandConsumed={() => {
+                    clearConnectCommandParam();
+                    setTabs((current) => current.map((item) => item.id === tab.id ? { ...item, pendingCommand: "" } : item));
+                  }}
+                  onDirectoryChange={(directory) => {
+                    const filePath = normalizeRemotePath(directory);
+                    setTabs((current) => current.map((item) => item.id === tab.id && item.activePaneID === pane.id && item.targetID === pane.targetID && !item.filePathInitialized ? { ...item, filePath, filePathInitialized: true } : item));
+                  }}
+                  onActivate={(paneID) => {
+                    setActiveTabID(tab.id);
+                    setTabs((current) => current.map((item) => item.id === tab.id ? { ...item, activePaneID: paneID } : item));
+                  }}
+                  onClose={(paneID) => closePane(tab.id, paneID)}
+                  onFullscreenChange={setTerminalFullscreen}
+                  onSplit={(side, targetID) => {
+                    setTabs((current) => current.map((item) => {
+                      if (item.id !== tab.id) return item;
+                      const nextPane = newTerminalPane(targetID || pane.targetID);
+                      return { ...item, layout: splitPane(item.layout, pane.id, nextPane, side), activePaneID: nextPane.id, targetID: nextPane.targetID };
+                    }));
+                    scheduleAllTerminalFits();
+                  }}
+                />;
+              }}
+            />
+          </div>;
+        }) : <div className="connect-zone-empty"><strong>{t("connectNoOpenTabsTitle")}</strong><span>{t("connectNoOpenTabsBody")}</span></div>}
+      </section>
+    </main>
+  );
+}
+
+function ConnectionTabs({
+  tabs,
+  activeTabID,
+  menu,
+  onActivate,
+  onClose,
+  onMenu,
+  onMenuAction,
+  onSplitTab,
+}: {
+  tabs: Array<{ tab: ConnectionTab; target: Target }>;
+  activeTabID: string;
+  menu: { tabID: string; x: number; y: number } | null;
+  onActivate: (tab: ConnectionTab) => void;
+  onClose: (tabID: string) => void;
+  onMenu: (tabID: string, point: { x: number; y: number }) => void;
+  onMenuAction: (mode: "one" | "left" | "right" | "others" | "all", tabID: string) => void;
+  onSplitTab: (tabID: string, side: PaneSide) => void;
+}) {
+  const tabsRef = useRef<HTMLElement>(null);
+  if (!tabs.length) return null;
+  const menuTarget = menu ? tabs.find((item) => item.tab.id === menu.tabID) : null;
+  return (
+    <section ref={tabsRef} className="connection-tabs" aria-label="Connection tabs">
+      <div className="connection-tabs-scroll">
+        {tabs.map(({ tab, target }, index) => (
+          <div
+            key={tab.id}
+            className={`connection-tab ${tab.id === activeTabID ? "active" : ""}`}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              onMenu(tab.id, contextMenuPointInTabs(event.clientX, event.clientY, tabsRef.current));
+            }}
+            title={serverTitle(target)}
+          >
+            <button type="button" className="connection-tab-main" onClick={() => onActivate(tab)}>
+              {target.target_type === "agent" ? <Server /> : <HardDrive />}
+              <span>
+                <strong>{target.name}</strong>
+                <code>{target.alias}{sameTargetTabCount(tabs, target.id) > 1 ? ` #${sameTargetTabIndex(tabs, target.id, index)}` : ""}</code>
+              </span>
+            </button>
+            <button type="button" className="connection-tab-close" aria-label="Close tab" onClick={() => onClose(tab.id)}>
+              <X />
+            </button>
+          </div>
+        ))}
+      </div>
+      {menu && menuTarget && (
+        <div
+          className="connection-tab-menu"
+          style={{ left: menu.x, top: menu.y } as CSSProperties}
+          onPointerDown={(event) => event.stopPropagation()}
+          role="menu"
+        >
+          <button type="button" role="menuitem" onClick={() => onMenuAction("one", menuTarget.tab.id)}>关闭当前</button>
+          {menuTarget.tab.id !== activeTabID && <button type="button" role="menuitem" onClick={() => onSplitTab(menuTarget.tab.id, "left")}>拆分到左侧</button>}
+          {menuTarget.tab.id !== activeTabID && <button type="button" role="menuitem" onClick={() => onSplitTab(menuTarget.tab.id, "down")}>拆分到下方</button>}
+          <button type="button" role="menuitem" onClick={() => onMenuAction("left", menuTarget.tab.id)}>关闭左侧</button>
+          <button type="button" role="menuitem" onClick={() => onMenuAction("right", menuTarget.tab.id)}>关闭右侧</button>
+          <button type="button" role="menuitem" onClick={() => onMenuAction("others", menuTarget.tab.id)}>关闭其他</button>
+          <button type="button" role="menuitem" onClick={() => onMenuAction("all", menuTarget.tab.id)}>关闭全部</button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PaneTree({ data, node, targets, activePaneID, isFullscreen, tabActive, pendingCommand, onPendingCommandConsumed, onDirectoryChange, onActivate, onClose, onFullscreenChange, onSplit }: {
+  data: ConsoleData;
+  node: PaneLeaf;
+  targets: Target[];
+  activePaneID: string;
+  isFullscreen: boolean;
+  tabActive: boolean;
+  pendingCommand?: string;
+  onPendingCommandConsumed?: () => void;
+  onDirectoryChange?: (directory: string) => void;
+  onActivate: (paneID: string) => void;
+  onClose: (paneID: string) => void;
+  onFullscreenChange: (value: boolean | ((previous: boolean) => boolean)) => void;
+  onSplit: (side: PaneSide, targetID?: string) => void;
+}) {
+  const target = targets.find((item) => item.id === node.targetID);
+  if (!target) return null;
+  const active = tabActive && node.id === activePaneID;
+  const activate = () => onActivate(node.id);
+  if (node.type === "preview") return <FilePreviewPane paneID={node.id} targetID={target.id} filePath={node.path} size={node.size} active={active} onActivate={activate} onClose={() => onClose(node.id)} />;
+  if (node.type === "editor") return <EditorPane paneID={node.id} target={target} filePath={node.path} active={active} onActivate={activate} onClose={() => onClose(node.id)} />;
+  if (node.type !== "terminal") return null;
+  return <div className={`connect-zone terminal-zone pane-leaf ${active ? "active" : ""}`} onPointerDown={activate}>
+    <TerminalPanel data={data} target={target} restoreSession={node.restoreSession} active={active} isFullscreen={isFullscreen && active} onFullscreenChange={onFullscreenChange} onClose={() => onClose(node.id)} onSplit={onSplit} paneID={node.id} pendingCommand={pendingCommand} onPendingCommandConsumed={onPendingCommandConsumed} onDirectoryChange={onDirectoryChange} dockable />
+  </div>;
+}
+
+function EditorPane({ paneID, target, filePath, active, onActivate, onClose }: { paneID: string; target: Target; filePath: string; active: boolean; onActivate: () => void; onClose: () => void }) {
+  const { t } = useI18n();
+  const { theme } = useTheme();
+  const editorHostRef = useRef<HTMLDivElement>(null);
+  const editorLayoutRef = useRef<Parameters<OnMount>[0] | null>(null);
+  const editorLayoutFrameRef = useRef<number | null>(null);
+  const editorLayoutRetryRef = useRef<number | null>(null);
+  const file = useQuery({
+    queryKey: ["target-file-read", target.id, filePath],
+    queryFn: () => api.readFile(target.id, filePath),
+  });
+  const [content, setContent] = useState("");
+  const [savedContent, setSavedContent] = useState("");
+  const [error, setError] = useState("");
+  const [confirmClose, setConfirmClose] = useState(false);
+  const dirty = content !== savedContent;
+  const editorLanguage = inferEditorLanguage(filePath);
+  const editorTheme = editorLanguage === "nginx" ? (theme === "dark" ? "nginx-theme-dark" : "nginx-theme") : (theme === "dark" ? "vs-dark" : "light");
+
+  useEffect(() => {
+    if (!file.data) return;
+    setContent(file.data.content);
+    setSavedContent(file.data.content);
+    setError("");
+  }, [file.data?.content, file.data?.path]);
+
+  const save = async () => {
+    try {
+      await api.writeFile(target.id, filePath, content);
+      setSavedContent(content);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const close = () => {
+    if (dirty) { setConfirmClose(true); return; }
+    onClose();
+  };
+
+  useEffect(() => {
+    if (!active) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const saveShortcut = (event.ctrlKey || event.altKey) && !event.metaKey && keyMatches(event, "s", "KeyS");
+      if (saveShortcut) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) void save();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [active, content, dirty, filePath, target.id]);
+
+  useEffect(() => {
+    if (!active) return;
+    const onCloseRequest = (event: Event) => {
+      const paneIDToClose = (event as CustomEvent<{ paneID?: string }>).detail?.paneID || "";
+      if (paneIDToClose === paneID) close();
+    };
+    window.addEventListener(EDITOR_PANE_CLOSE_REQUEST, onCloseRequest);
+    return () => window.removeEventListener(EDITOR_PANE_CLOSE_REQUEST, onCloseRequest);
+  }, [active, content, dirty, filePath, paneID, target.id]);
+
+  const layoutEditor = () => {
+    const host = editorHostRef.current;
+    const editor = editorLayoutRef.current;
+    if (!host || !editor) return;
+    const rect = host.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    editor.layout({ width: Math.floor(rect.width), height: Math.floor(rect.height) });
+  };
+
+  const scheduleEditorLayout = () => {
+    if (editorLayoutFrameRef.current) window.cancelAnimationFrame(editorLayoutFrameRef.current);
+    editorLayoutFrameRef.current = window.requestAnimationFrame(() => {
+      editorLayoutFrameRef.current = null;
+      layoutEditor();
+    });
+  };
+
+  useEffect(() => {
+    const host = editorHostRef.current;
+    if (!host) return;
+    const resizeObserver = new ResizeObserver(scheduleEditorLayout);
+    resizeObserver.observe(host);
+    scheduleEditorLayout();
+    return () => {
+      resizeObserver.disconnect();
+      if (editorLayoutFrameRef.current) window.cancelAnimationFrame(editorLayoutFrameRef.current);
+      if (editorLayoutRetryRef.current) window.clearTimeout(editorLayoutRetryRef.current);
+      editorLayoutFrameRef.current = null;
+      editorLayoutRetryRef.current = null;
+    };
+  }, [file.data?.path]);
+
+  useEffect(() => {
+    scheduleEditorLayout();
+    const retry = window.setTimeout(scheduleEditorLayout, 80);
+    return () => window.clearTimeout(retry);
+  }, [active, filePath, theme, file.isLoading, Boolean(error)]);
+
+  const beforeMountEditor: BeforeMount = (monaco) => {
+    configureMonaco(monaco);
+  };
+
+  const mountEditor: OnMount = (editor, monaco) => {
+    configureMonaco(monaco);
+    editorLayoutRef.current = editor;
+    editor.addAction({
+      id: "gosshd-toggle-line-comment",
+      label: "Toggle line comment",
+      keybindings: [
+        monaco.KeyMod.CtrlCmd | monaco.KeyCode.Slash,
+        monaco.KeyMod.Alt | monaco.KeyCode.Slash,
+      ],
+      run: (instance) => {
+        instance.trigger("gosshd", "editor.action.commentLine", null);
+      },
+    });
+    scheduleEditorLayout();
+    if (editorLayoutRetryRef.current) window.clearTimeout(editorLayoutRetryRef.current);
+    editorLayoutRetryRef.current = window.setTimeout(scheduleEditorLayout, 80);
+  };
+
+  return (
+    <section className={`editor-pane pane-leaf ${active ? "active" : ""}`} onPointerDown={onActivate}>
+      <header className="editor-pane-head">
+        <DockDragHandle paneID={paneID}><span title={filePath}>{dirty ? "* " : ""}{filePath}</span></DockDragHandle>
+        <div className="editor-pane-actions">
+          <button type="button" className="icon-button" onClick={() => void save()} title={t("save")} disabled={file.isLoading}>
+            <Save />
+          </button>
+          <button type="button" className="icon-button" onClick={close} title={t("close")} aria-label={t("close")}>
+            <X />
+          </button>
+        </div>
+      </header>
+      {error && <div className="editor-pane-error">{error}</div>}
+      {file.isLoading ? (
+        <div className="connect-zone-empty"><span>{t("loading")}</span></div>
+      ) : file.error ? (
+        <div className="connect-zone-empty"><span>{file.error instanceof Error ? file.error.message : String(file.error)}</span></div>
+      ) : (
+        <div className="editor-monaco-host" ref={editorHostRef}>
+          <Editor
+            className="editor-pane-monaco"
+            height="100%"
+            width="100%"
+            theme={editorTheme}
+            path={`gosshd://${encodeURIComponent(target.id)}/${encodeURIComponent(paneID)}/${encodeURIComponent(filePath)}`}
+            language={editorLanguage}
+            value={content}
+            wrapperProps={{ className: "editor-monaco-wrapper" }}
+            beforeMount={beforeMountEditor}
+            onMount={mountEditor}
+            onChange={(value: string | undefined) => setContent(value ?? "")}
+            options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: "on", scrollBeyondLastLine: false, automaticLayout: true }}
+          />
+        </div>
+      )}
+    {confirmClose && <ConfirmDialog title={t("close")} body={t("connectEditorCloseDirtyConfirm")} confirmLabel={t("close")} danger onConfirm={onClose} onClose={() => setConfirmClose(false)} />}
+    </section>
+  );
+}
+
+function configureMonaco(instance: Monaco) {
+  if (monacoConfigured) return;
+  monacoConfigured = true;
+  const fallbackLanguageRegistered = instance.languages.getLanguages().some((language: { id: string }) => language.id === FALLBACK_EDITOR_LANGUAGE);
+  if (!fallbackLanguageRegistered) {
+    instance.languages.register({ id: FALLBACK_EDITOR_LANGUAGE });
+  }
+  setHashCommentLanguageConfiguration(instance, FALLBACK_EDITOR_LANGUAGE);
+  setHashCommentLanguageConfiguration(instance, "dockerfile");
+  setHashCommentLanguageConfiguration(instance, "nginx");
+}
+
+function setHashCommentLanguageConfiguration(instance: Monaco, languageID: string) {
+  const languageRegistered = instance.languages.getLanguages().some((language: { id: string }) => language.id === languageID);
+  if (!languageRegistered) return;
+  instance.languages.setLanguageConfiguration(languageID, {
+    comments: { lineComment: "#" },
+    brackets: [["{", "}"], ["(", ")"], ["[", "]"]],
+    autoClosingPairs: [
+      { open: "{", close: "}" },
+      { open: "(", close: ")" },
+      { open: "[", close: "]" },
+      { open: "\"", close: "\"" },
+      { open: "'", close: "'" },
+    ],
+  });
+}
+
+function SystemSnapshotContent({
+  targetID,
+  snapshot,
+  sampleSnapshot,
+  isLoading,
+  error,
+}: {
+  targetID: string;
+  snapshot?: TargetSystemSnapshot;
+  sampleSnapshot?: TargetSystemSnapshot;
+  isLoading: boolean;
+  error: Error | null;
+}) {
+  const { t } = useI18n();
+  const [samples, setSamples] = useState<MetricSample[]>([]);
+  const networkTrend = buildNetworkRates(samples);
+  const interfaceRates = buildInterfaceNetworkRates(samples);
+
+  useEffect(() => {
+    setSamples([]);
+  }, [targetID]);
+
+  useEffect(() => {
+    if (!sampleSnapshot) return;
+    const sample = snapshotToSample(sampleSnapshot);
+    setSamples((current) => [...current, sample].slice(-MAX_SYSTEM_SAMPLES));
+  }, [sampleSnapshot]);
+
+  return (
+    <div className="telemetry-panel host-system-content">
+      {!snapshot && (
+        <div className="telemetry-empty">
+          <strong>{isLoading ? t("loading") : t("connectSystemUnavailable")}</strong>
+          {error && <span>{String(error.message || "")}</span>}
+        </div>
+      )}
+
+      {snapshot && (
+        <>
+          <div className="telemetry-ip-card">
+            <span>{t("connectSystemIP")}</span>
+            <strong title={snapshot.ip || snapshot.hostname || "-"}>{snapshot.ip || snapshot.hostname || "-"}</strong>
+            {snapshot.public_ipv4 && <div><b>{t("connectSystemPublicIPv4")}</b><code title={snapshot.public_ipv4}>{snapshot.public_ipv4}</code></div>}
+            {snapshot.public_ipv6 && <div><b>{t("connectSystemPublicIPv6")}</b><code title={snapshot.public_ipv6}>{snapshot.public_ipv6}</code></div>}
+            <small>{[snapshot.os, snapshot.hostname].filter(Boolean).join(" / ") || "-"}</small>
+          </div>
+
+          <dl className="telemetry-summary">
+            <div>
+              <dt>{t("connectSystemUptime")}</dt>
+              <dd title={snapshot.uptime || "-"}>{snapshot.uptime || "-"}</dd>
+            </div>
+            <div>
+              <dt>{t("connectSystemLoad")}</dt>
+              <dd>{snapshot.load || "-"}</dd>
+            </div>
+          </dl>
+
+          <ResourceMeter icon={<Cpu />} label={t("connectSystemCPU")} percent={snapshot.cpu_percent} trend={samples.map((item) => item.cpu)} />
+          <ResourceMeter label={t("connectSystemMemory")} usage={snapshot.memory} trend={samples.map((item) => item.memory)} />
+          <ResourceMeter label={t("connectSystemSwap")} usage={snapshot.swap} trend={samples.map((item) => item.swap)} />
+
+          <section className="telemetry-block">
+            <h4>{t("connectSystemProcesses")}</h4>
+            <div className="telemetry-process-list">
+              {(snapshot.processes || []).slice(0, 5).map((item) => (
+                <div className="telemetry-process" key={`${item.command}-${item.rss_bytes}-${item.cpu_percent}`}>
+                  <strong title={item.command}>{item.command}</strong>
+                  <span>{formatBytes(item.rss_bytes)}</span>
+                  <span>{item.cpu_percent.toFixed(1)}%</span>
+                </div>
+              ))}
+              {!snapshot.processes?.length && <p>{t("connectSystemNoData")}</p>}
+            </div>
+          </section>
+
+          <section className="telemetry-block">
+            <h4><Network />{t("connectSystemNetwork")}</h4>
+            <div className="telemetry-trend-pair">
+              <TrendLine label={t("connectSystemRX")} values={networkTrend.rx} />
+              <TrendLine label={t("connectSystemTX")} values={networkTrend.tx} />
+            </div>
+            <div className="telemetry-network-list">
+              {(snapshot.network || []).slice(0, 4).map((item) => (
+                <div className="telemetry-network" key={item.interface}>
+                  <strong title={networkInterfaceName(item.interface)}>{networkInterfaceName(item.interface)}</strong>
+                  <span title={`${t("connectSystemRX")}: ${formatBytesPerSecond(interfaceRates[item.interface]?.rx)}`}><b aria-hidden="true">↓</b><span className="telemetry-network-rate-value">{formatBytesPerSecond(interfaceRates[item.interface]?.rx)}</span></span>
+                  <span title={`${t("connectSystemTX")}: ${formatBytesPerSecond(interfaceRates[item.interface]?.tx)}`}><b aria-hidden="true">↑</b><span className="telemetry-network-rate-value">{formatBytesPerSecond(interfaceRates[item.interface]?.tx)}</span></span>
+                </div>
+              ))}
+              {!snapshot.network?.length && <p>{t("connectSystemNoData")}</p>}
+            </div>
+          </section>
+
+          <section className="telemetry-block">
+            <h4><HardDrive />{t("connectSystemFilesystems")}</h4>
+            <div className="telemetry-disk-list">
+              {(snapshot.filesystems || []).slice(0, 12).map((item) => (
+                <div className="telemetry-disk" key={item.path}>
+                  <div>
+                    <strong title={item.path}>{item.path}</strong>
+                    <span>{formatBytes(item.used_bytes)}/{formatBytes(item.total_bytes)}</span>
+                  </div>
+                  <Meter percent={item.percent} />
+                </div>
+              ))}
+              {!snapshot.filesystems?.length && <p>{t("connectSystemNoData")}</p>}
+            </div>
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ResourceMeter({ icon, label, percent, usage, trend }: { icon?: ReactNode; label: string; percent?: number; usage?: TargetSystemUsage; trend?: number[] }) {
+  const value = clampNumber(percent ?? usage?.percent ?? 0);
+  return (
+    <div className="resource-meter">
+      <div className="resource-meter-head">
+        <span>{icon}{label}</span>
+        <strong>{value.toFixed(0)}%</strong>
+      </div>
+      <Meter percent={value} />
+      {usage && usage.total_bytes > 0 && (
+        <small>{formatBytes(usage.used_bytes)}/{formatBytes(usage.total_bytes)}</small>
+      )}
+      <TrendLine label={label} values={trend || []} max={100} compact />
+    </div>
+  );
+}
+
+function Meter({ percent }: { percent: number }) {
+  const value = clampNumber(percent);
+  return (
+    <div className="meter-track" aria-label={`${value.toFixed(0)}%`}>
+      <span style={{ width: `${value}%` }} />
+    </div>
+  );
+}
+
+function TrendLine({ label, values, max, compact = false }: { label: string; values: number[]; max?: number; compact?: boolean }) {
+  const points = sparklinePoints(values, max);
+  const latest = values.length ? values[values.length - 1] : 0;
+  return (
+    <div className={compact ? "trend-line compact" : "trend-line"} title={`${label}: ${latest.toFixed(1)}`}>
+      <svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-label={label}>
+        <polyline points={points} />
+      </svg>
+      {!compact && <span>{label}</span>}
+    </div>
+  );
+}
+
+export function TerminalPanel({ data, target, paneID, restoreSession = false, active = true, isFullscreen, onFullscreenChange, onClose, onSplit, pendingCommand = "", onPendingCommandConsumed, onDirectoryChange, manualReview = true, dockable = false }: TerminalPanelProps) {
+  const { t } = useI18n();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const runtime = useMemo(() => getTerminalRuntime(paneID, target.id, restoreSession), [paneID, restoreSession, target.id]);
+  const [status, setStatus] = useState<ConnectionStatus>(runtime.status);
+  const [error, setError] = useState(runtime.error);
+  const [dims, setDims] = useState(runtime.dims);
+  const [sessionID, setSessionID] = useState(runtime.sessionID);
+  const [cwd, setCwd] = useState(runtime.cwd);
+  const directoryChangeRef = useRef(onDirectoryChange);
+  directoryChangeRef.current = onDirectoryChange;
+  const [aiEnabled, setAIEnabled] = useState(runtime.aiEnabled);
+  const [mobileModifier, setMobileModifier] = useState<TerminalModifier | null>(runtime.mobileModifier);
+  const fitRetryRef = useRef<number | null>(null);
+  const fitFrameRef = useRef<number | null>(null);
+  const connected = status === "connected";
+
+  const setModifier = (modifier: TerminalModifier | null) => {
+    setRuntimeSnapshot(runtime, { mobileModifier: modifier });
+  };
+
+  useEffect(() => {
+    const sync = () => {
+      setStatus(runtime.status);
+      setError(runtime.error);
+      setDims(runtime.dims);
+      setSessionID(runtime.sessionID);
+      setCwd(runtime.cwd);
+      setAIEnabled(runtime.aiEnabled);
+      setMobileModifier(runtime.mobileModifier);
+    };
+    runtime.listeners.add(sync);
+    sync();
+    return () => {
+      runtime.listeners.delete(sync);
+    };
+  }, [runtime]);
+
+  useEffect(() => {
+    runtime.active = active;
+    runtime.onClose = onClose;
+    runtime.onPendingCommandConsumed = onPendingCommandConsumed;
+  }, [active, onClose, onPendingCommandConsumed, runtime]);
+
+  useEffect(() => {
+    if (active && cwd) directoryChangeRef.current?.(cwd);
+  }, [active, cwd]);
+
+  const updateStatus = (next: ConnectionStatus) => {
+    setRuntimeSnapshot(runtime, { status: next });
+  };
+
+  const sendAICollaborationState = (enabled: boolean) => {
+    const socket = runtime.socket;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "ai-collaboration", enabled }));
+    }
+  };
+
+  const toggleAI = () => {
+    const next = !runtime.aiEnabled;
+    setRuntimeSnapshot(runtime, { aiEnabled: next });
+    sendAICollaborationState(next);
+  };
+
+  const sendTerminalInput = (value: string) => {
+    const socket = runtime.socket;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "input", data: value }));
+      return true;
+    }
+    return false;
+  };
+
+  const pressMobileShortcut = (key: TerminalShortcutKey) => {
+    try {
+      if (key === "ctrl" || key === "alt") {
+        setModifier(runtime.mobileModifier === key ? null : key);
+        return;
+      }
+      const sequence = terminalShortcutSequence(key, {
+        applicationCursorMode: runtime.terminal?.modes.applicationCursorKeysMode || false,
+        modifier: runtime.mobileModifier,
+      });
+      if (sequence && sendTerminalInput(sequence)) setModifier(null);
+    } finally {
+      runtime.terminal?.focus();
+    }
+  };
+
+  const runPendingCommand = () => {
+    const command = runtime.pendingCommand.trim();
+    if (!command || runtime.status !== "connected") return;
+    if (!sendTerminalInput(`${command}\r`)) return;
+    runtime.pendingCommand = "";
+    runtime.onPendingCommandConsumed?.();
+  };
+
+  const connect = () => {
+    setRuntimeSnapshot(runtime, { mobileModifier: null });
+    if (runtime.socket) {
+      runtime.socket.close();
+      runtime.socket = null;
+    }
+    clearQueuedTerminalOutput(runtime);
+    updateStatus("connecting");
+    setRuntimeSnapshot(runtime, { error: "" });
+    const terminal = runtime.terminal;
+    if (!terminal) return;
+    fitTerminal(terminal);
+
+    const cols = terminal.cols || DEFAULT_COLS;
+    const rows = terminal.rows || DEFAULT_ROWS;
+    const url = api.targetTerminalURL(target.id, cols, rows, runtime.sessionID);
+    const socket = new WebSocket(url);
+    runtime.socket = socket;
+    runtime.targetID = target.id;
+    const isCurrentSocket = () => runtime.socket === socket;
+
+    socket.onopen = () => {
+      if (!isCurrentSocket()) return;
+      updateStatus("connected");
+      if (!isMobileViewport()) terminal.focus();
+      const currentCols = terminal.cols || cols;
+      const currentRows = terminal.rows || rows;
+      setRuntimeSnapshot(runtime, { dims: { cols: currentCols, rows: currentRows } });
+      socket.send(JSON.stringify({ type: "resize", cols: currentCols, rows: currentRows }));
+      socket.send(JSON.stringify({ type: "ai-collaboration", enabled: runtime.aiEnabled }));
+      window.setTimeout(runPendingCommand, 80);
+      if (runtime.heartbeat) window.clearInterval(runtime.heartbeat);
+      runtime.heartbeat = window.setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "heartbeat" }));
+        }
+      }, 10_000);
+    };
+
+    socket.onmessage = (event) => {
+      if (!isCurrentSocket()) return;
+      try {
+        const message = JSON.parse(event.data) as { type: string; data?: string; code?: number; cols?: number; rows?: number; session_id?: string };
+        if (message.type === "output" && message.data !== undefined) {
+          enqueueTerminalOutput(runtime, terminal, message.data);
+          if (isTerminalSessionClosedOutput(message.data)) {
+            updateStatus("disconnected");
+            setRuntimeSnapshot(runtime, { sessionID: "", mobileModifier: null });
+          }
+        } else if (message.type === "cwd" && message.data) {
+          setRuntimeSnapshot(runtime, { cwd: message.data });
+        } else if (message.type === "error" && message.data !== undefined) {
+          enqueueTerminalOutput(runtime, terminal, `\r\n\x1b[1;31m${message.data}\x1b[0m\r\n`);
+          updateStatus("error");
+          setRuntimeSnapshot(runtime, { error: message.data });
+        } else if (message.type === "exit") {
+          enqueueTerminalOutput(runtime, terminal, `\r\n\x1b[2;37mSession ended (exit ${message.code ?? "-"})\x1b[0m\r\n`);
+          updateStatus("disconnected");
+          setRuntimeSnapshot(runtime, { sessionID: "", mobileModifier: null });
+          socket.close();
+        } else if (message.type === "session" && message.session_id) {
+          setRuntimeSnapshot(runtime, { sessionID: message.session_id });
+        }
+      } catch {
+        enqueueTerminalOutput(runtime, terminal, event.data);
+      }
+    };
+
+    socket.onerror = () => {
+      if (!isCurrentSocket()) return;
+      updateStatus("error");
+      setRuntimeSnapshot(runtime, { error: t("connectStatusError") });
+    };
+
+    socket.onclose = () => {
+      if (!isCurrentSocket()) return;
+      if (runtime.heartbeat) {
+        window.clearInterval(runtime.heartbeat);
+        runtime.heartbeat = null;
+      }
+      updateStatus(runtime.status === "connected" ? "disconnected" : runtime.status);
+      setRuntimeSnapshot(runtime, { mobileModifier: null });
+    };
+  };
+  runtime.connect = connect;
+
+  useEffect(() => {
+    if (!active || !pendingCommand.trim()) return;
+    runtime.pendingCommand = pendingCommand;
+    runPendingCommand();
+  }, [active, pendingCommand, runtime]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    let terminal = runtime.terminal;
+    const mobileMedia = window.matchMedia("(max-width: 760px)");
+    if (!terminal) {
+      terminal = new Terminal({
+        cols: DEFAULT_COLS,
+        rows: DEFAULT_ROWS,
+        convertEol: true,
+        cursorBlink: true,
+        fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+        fontSize: 13,
+        letterSpacing: mobileMedia.matches ? -1 : 0,
+        theme: { background: "#08111e", foreground: "#dbeafe", cursor: "#67e8f9", selectionBackground: "#0e7490" },
+        screenReaderMode: true,
+      });
+      terminal.open(container);
+      runtime.terminal = terminal;
+
+      terminal.attachCustomKeyEventHandler((event) => {
+        if (event.type !== "keydown") return true;
+        if (runtime.status !== "disconnected" && runtime.status !== "error") return true;
+        const ctrlD = event.ctrlKey && !event.altKey && !event.metaKey && keyMatches(event, "d", "KeyD");
+        if (ctrlD) {
+          if (!event.repeat && runtime.active) runtime.onClose?.();
+          return false;
+        }
+        if (event.key === "Enter") {
+          if (!event.repeat) runtime.connect?.();
+          return false;
+        }
+        return true;
+      });
+
+      runtime.disposables.push(terminal.onData((value) => {
+        if (runtime.status === "disconnected" || runtime.status === "error") {
+          if (value === "\x04") {
+            if (runtime.active) runtime.onClose?.();
+            return;
+          }
+          if (value === "\r" || value === "\n") {
+            runtime.connect?.();
+            return;
+          }
+        }
+        const modifier = runtime.mobileModifier;
+        const normalized = normalizeTerminalInputText(value);
+        if (modifier) setRuntimeSnapshot(runtime, { mobileModifier: null });
+        sendTerminalInput(applyTerminalModifier(normalized, modifier));
+      }));
+
+      runtime.disposables.push(terminal.onResize(({ cols, rows }) => {
+        setRuntimeSnapshot(runtime, { dims: { cols, rows } });
+        const socket = runtime.socket;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "resize", cols, rows }));
+        }
+      }));
+      connect();
+    } else if (terminal.element && terminal.element.parentElement !== container) {
+      container.appendChild(terminal.element);
+    }
+    const focusTerminal = () => terminal.focus();
+    const syncTerminalLetterSpacing = () => {
+      terminal.options.letterSpacing = mobileMedia.matches ? -1 : 0;
+      scheduleTerminalFit(terminal);
+    };
+    mobileMedia.addEventListener("change", syncTerminalLetterSpacing);
+    syncTerminalLetterSpacing();
+    if (runtime.active && !isMobileViewport()) terminal.focus();
+    if (isMobileViewport()) window.setTimeout(() => {
+      blurActiveElement();
+    }, 0);
+    container.addEventListener("pointerdown", focusTerminal);
+    const pasteText = (text: string) => {
+      if (!text || runtime.status !== "connected") return;
+      sendTerminalInput(normalizeTerminalInputText(text));
+    };
+    const onTerminalPaste = (event: ClipboardEvent) => {
+      const text = event.clipboardData?.getData("text/plain") || "";
+      if (!text || runtime.status !== "connected") return;
+      event.preventDefault();
+      event.stopPropagation();
+      pasteText(text);
+    };
+    const onTerminalPasteShortcut = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "v" || (!event.ctrlKey && !event.metaKey) || event.altKey || runtime.status !== "connected") return;
+      event.preventDefault();
+      event.stopPropagation();
+      void navigator.clipboard?.readText().then(pasteText).catch(() => undefined);
+    };
+    container.addEventListener("paste", onTerminalPaste);
+    container.addEventListener("keydown", onTerminalPasteShortcut, true);
+
+    const reconnectIfInactive = () => {
+      if (runtime.status !== "disconnected" && runtime.status !== "error") return false;
+      runtime.connect?.();
+      return true;
+    };
+
+    const onTerminalKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Enter") return;
+      if (reconnectIfInactive()) event.preventDefault();
+    };
+    container.addEventListener("keydown", onTerminalKeyDown);
+
+    const resizeObserver = new ResizeObserver(() => {
+      scheduleTerminalFit(terminal);
+    });
+    resizeObserver.observe(container);
+    scheduleTerminalFit(terminal);
+
+    const onVisualViewportResize = () => {
+      if (!mobileMedia.matches) return;
+      scheduleTerminalFit(terminal);
+      window.requestAnimationFrame(() => terminal.scrollToBottom());
+    };
+    window.visualViewport?.addEventListener("resize", onVisualViewportResize);
+
+    const focusTerminalOnWindowFocus = () => {
+      if (runtime.active && !isMobileViewport()) terminal.focus();
+    };
+    window.addEventListener("focus", focusTerminalOnWindowFocus);
+
+    return () => {
+      if (fitRetryRef.current) window.clearTimeout(fitRetryRef.current);
+      if (fitFrameRef.current) window.cancelAnimationFrame(fitFrameRef.current);
+      window.removeEventListener("focus", focusTerminalOnWindowFocus);
+      window.visualViewport?.removeEventListener("resize", onVisualViewportResize);
+      resizeObserver.disconnect();
+      mobileMedia.removeEventListener("change", syncTerminalLetterSpacing);
+      container.removeEventListener("pointerdown", focusTerminal);
+      container.removeEventListener("paste", onTerminalPaste);
+      container.removeEventListener("keydown", onTerminalPasteShortcut, true);
+      container.removeEventListener("keydown", onTerminalKeyDown);
+    };
+  }, [runtime, target.id]);
+
+  const scheduleTerminalFit = (terminal: Terminal) => {
+    if (fitFrameRef.current) window.cancelAnimationFrame(fitFrameRef.current);
+    fitFrameRef.current = window.requestAnimationFrame(() => {
+      fitFrameRef.current = null;
+      fitTerminal(terminal);
+    });
+  };
+  runtime.fit = () => {
+    const terminal = runtime.terminal;
+    if (!terminal) return;
+    scheduleTerminalFit(terminal);
+    window.setTimeout(() => scheduleTerminalFit(terminal), 80);
+    window.setTimeout(() => scheduleTerminalFit(terminal), 220);
+  };
+
+  const fitTerminal = (terminal: Terminal) => {
+    if (!containerRef.current) return;
+    const container = containerRef.current;
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+    if (width <= 0 || height <= 0) return;
+
+    if (terminal.element) {
+      terminal.element.style.width = `${width}px`;
+      terminal.element.style.height = `${height}px`;
+      const screen = terminal.element.querySelector<HTMLElement>(".xterm-screen");
+      const viewport = terminal.element.querySelector<HTMLElement>(".xterm-viewport");
+      const rows = terminal.element.querySelector<HTMLElement>(".xterm-rows");
+      if (screen) screen.style.height = `${height}px`;
+      if (viewport) viewport.style.height = `${height}px`;
+      if (rows) rows.style.height = `${height}px`;
+    }
+    const dims = estimateTerminalDimensions(container, width, height, terminal);
+    if (dims.cols >= 20 && dims.rows >= 8 && (dims.cols !== terminal.cols || dims.rows !== terminal.rows)) {
+      terminal.resize(dims.cols, dims.rows);
+    }
+  };
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "F11" && runtime.active) {
+        event.preventDefault();
+        onFullscreenChange((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    const terminal = runtime.terminal;
+    if (!terminal) return;
+    if (fitRetryRef.current) window.clearTimeout(fitRetryRef.current);
+    scheduleTerminalFit(terminal);
+    fitRetryRef.current = window.setTimeout(() => scheduleTerminalFit(terminal), 120);
+    if (active && !isMobileViewport()) terminal.focus();
+  }, [active, isFullscreen, runtime, target.id]);
+
+  useEffect(() => {
+    if (!active) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const inactive = runtime.status === "disconnected" || runtime.status === "error";
+      if (!inactive) return;
+      const targetElement = event.target as HTMLElement | null;
+      if (isEditableElementOutsideTerminal(targetElement, containerRef.current)) return;
+      if (event.ctrlKey && !event.altKey && !event.metaKey && keyMatches(event, "d", "KeyD")) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) runtime.onClose?.();
+        return;
+      }
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      runtime.connect?.();
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [active, runtime, target.id]);
+
+  return (
+    <section className={`terminal-panel ${active ? "active" : "inactive"} ${isFullscreen ? "fullscreen" : ""}`} aria-hidden={!active}>
+      {manualReview && sessionID && <ManualReviewPoller data={data} sessionID={sessionID} />}
+      <div className="terminal-pane-toolbar">
+        {dockable && <DockDragHandle paneID={paneID}><span>{t("connectTerminal")}</span></DockDragHandle>}
+        <button type="button" className={`terminal-ai-button icon-button ${aiEnabled ? "active" : ""}`} onClick={toggleAI} aria-pressed={aiEnabled} title={aiEnabled ? t("connectAICollaborationOn") : t("connectAICollaborationOff")}>
+          <img src={aiCollaborationIcon} alt="" />
+        </button>
+        <button type="button" className="icon-button" onClick={() => onSplit?.("right")} title={t("connectSplitRight")}>
+          <SplitSquareHorizontal />
+        </button>
+        <button type="button" className="icon-button" onClick={() => onSplit?.("down")} title={t("connectSplitDown")}>
+          <SplitSquareVertical />
+        </button>
+        <button type="button" className="icon-button" onClick={() => onFullscreenChange((prev) => !prev)} aria-label={isFullscreen ? t("connectExitFullscreen") : t("connectFullscreen")} title={isFullscreen ? t("connectExitFullscreen") : t("connectFullscreen")}>
+          {isFullscreen ? <Minimize /> : <Maximize />}
+        </button>
+      </div>
+      {(status === "disconnected" || status === "error") && <button type="button" className="terminal-reconnect-button" onClick={connect}><RefreshCw />{t("connectReconnect")}</button>}
+      <div className="terminal-viewport" ref={containerRef} />
+      <div className="mobile-terminal-keys">
+        {MOBILE_TERMINAL_KEY_ROWS.flat().map((key) => {
+          const modifier = key === "ctrl" || key === "alt";
+          return <button
+            type="button"
+            key={key}
+            data-terminal-key={key}
+            className={modifier && mobileModifier === key ? "active" : ""}
+            aria-pressed={modifier ? mobileModifier === key : undefined}
+            disabled={!connected || !active}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => pressMobileShortcut(key)}
+          >{TERMINAL_SHORTCUT_LABELS[key]}</button>;
+        })}
+      </div>
+    </section>
+  );
+}
+
+
+function keyMatches(event: KeyboardEvent, key: string, code: string) {
+  return event.key.toLowerCase() === key || event.code === code;
+}
+
+function isMobileViewport() {
+  return window.matchMedia("(max-width: 760px)").matches;
+}
+
+function blurActiveElement() {
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+}
+
+function isEditableElementOutsideTerminal(element: HTMLElement | null, terminalContainer: HTMLElement | null) {
+  if (!element) return false;
+  if (terminalContainer?.contains(element)) return false;
+  return Boolean(element.closest("button,a,input,textarea,select,[contenteditable='true']"));
+}
+
+
+function contextMenuPointInTabs(clientX: number, clientY: number, container: HTMLElement | null) {
+  const menuWidth = 150;
+  const menuHeight = 166;
+  const margin = 4;
+  if (!container) return { x: clientX, y: clientY };
+  const rect = container.getBoundingClientRect();
+  return {
+    x: clampNumber(clientX - rect.left - 2, margin, Math.max(margin, rect.width - menuWidth - margin)),
+    y: clampNumber(clientY - rect.top + 2, margin, Math.max(margin, rect.height - menuHeight - margin)),
+  };
+}
+
+function newConnectionTab(targetID: string, pendingCommand: string, restoreSession: boolean, storageKey: string, mobile: boolean): ConnectionTab {
+  const restored = restoreWorkspace(storageKey, targetID, restoreSession, mobile);
+  return { id: newPaneID(targetID), targetID, ...restored, pendingCommand };
+}
+
+function newTerminalPane(targetID: string, restoreSession = false): TerminalPaneNode {
+  return { type: "terminal", id: newPaneID("terminal"), targetID, restoreSession };
+}
+
+function getTerminalRuntime(paneID: string, targetID: string, restoreSession: boolean): TerminalRuntime {
+  const current = terminalRuntimes.get(paneID);
+  if (current && current.targetID === targetID && !current.disposed) return current;
+  const runtime: TerminalRuntime = {
+    paneID,
+    targetID,
+    terminal: null,
+    socket: null,
+    heartbeat: null,
+    status: "connecting",
+    error: "",
+    dims: { cols: DEFAULT_COLS, rows: DEFAULT_ROWS },
+    sessionID: restoreSession ? readStoredTerminalSessionID(targetID) : "",
+    cwd: "",
+    aiEnabled: true,
+    mobileModifier: null,
+    pendingCommand: "",
+    active: false,
+    disposed: false,
+    outputQueue: [],
+    outputFrame: null,
+    listeners: new Set(),
+    disposables: [],
+  };
+  terminalRuntimes.set(paneID, runtime);
+  return runtime;
+}
+
+function setRuntimeSnapshot(runtime: TerminalRuntime, patch: Partial<Pick<TerminalRuntime, "status" | "error" | "dims" | "sessionID" | "cwd" | "aiEnabled" | "mobileModifier">>) {
+  Object.assign(runtime, patch);
+  if (Object.prototype.hasOwnProperty.call(patch, "sessionID")) {
+    writeStoredTerminalSessionID(runtime.targetID, runtime.sessionID);
+  }
+  for (const listener of runtime.listeners) listener();
+}
+
+function terminalSessionStorageKey(targetID: string) {
+  return `${TERMINAL_SESSION_STORAGE_PREFIX}${targetID}`;
+}
+
+function readStoredTerminalSessionID(targetID: string) {
+  try {
+    return window.localStorage.getItem(terminalSessionStorageKey(targetID)) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredTerminalSessionID(targetID: string, sessionID: string) {
+  try {
+    const key = terminalSessionStorageKey(targetID);
+    if (sessionID) {
+      window.localStorage.setItem(key, sessionID);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage failures; the in-memory runtime can still reconnect.
+  }
+}
+
+function isTerminalSessionClosedOutput(data: string) {
+  return data.includes("Session closed:");
+}
+
+function enqueueTerminalOutput(runtime: TerminalRuntime, terminal: Terminal, data: string) {
+  if (!data || runtime.disposed) return;
+  runtime.outputQueue.push(data);
+  if (runtime.outputFrame !== null) return;
+  runtime.outputFrame = window.requestAnimationFrame(() => flushQueuedTerminalOutput(runtime, terminal));
+}
+
+function flushQueuedTerminalOutput(runtime: TerminalRuntime, terminal: Terminal) {
+  runtime.outputFrame = null;
+  if (runtime.disposed || !runtime.outputQueue.length) return;
+  const output = runtime.outputQueue.join("");
+  runtime.outputQueue = [];
+  terminal.write(output);
+  if (runtime.outputQueue.length && runtime.outputFrame === null) {
+    runtime.outputFrame = window.requestAnimationFrame(() => flushQueuedTerminalOutput(runtime, terminal));
+  }
+}
+
+function clearQueuedTerminalOutput(runtime: TerminalRuntime) {
+  runtime.outputQueue = [];
+  if (runtime.outputFrame !== null) {
+    window.cancelAnimationFrame(runtime.outputFrame);
+    runtime.outputFrame = null;
+  }
+}
+
+function normalizeTerminalInputText(text: string) {
+  if (!text || !/-encodedcommand/i.test(text) || !/\bawk\b/i.test(text)) return text;
+  let normalized = text.replace(/\bawk\s+(\/(?:\\.|[^/\r\n])+\/)\s+-encodedcommand\s+([A-Za-z0-9+/=]+)/gi, (_match, pattern: string, encoded: string) => {
+    const decoded = decodePowerShellEncodedCommand(encoded);
+    if (!decoded) return _match;
+    return `awk '${escapeSingleQuotedShell(`${pattern} {${decoded}}`)}'`;
+  });
+  normalized = normalized.replace(/\s+-inputformat\s+xml\s+-outputformat\s+text\b/gi, "");
+  return normalized;
+}
+
+function decodePowerShellEncodedCommand(encoded: string) {
+  try {
+    const binary = atob(encoded);
+    let out = "";
+    for (let index = 0; index + 1 < binary.length; index += 2) {
+      out += String.fromCharCode(binary.charCodeAt(index) | (binary.charCodeAt(index + 1) << 8));
+    }
+    return out.trim();
+  } catch {
+    return "";
+  }
+}
+
+function escapeSingleQuotedShell(value: string) {
+  return value.replace(/'/g, "'\\''");
+}
+
+function scheduleAllTerminalFits() {
+  window.requestAnimationFrame(() => {
+    for (const runtime of terminalRuntimes.values()) runtime.fit?.();
+  });
+}
+
+function disposePaneRuntime(node: PaneNode | null) {
+  if (!node) return;
+  if (node.type === "split") {
+    disposePaneRuntime(node.first);
+    disposePaneRuntime(node.second);
+    return;
+  }
+  if (node.type !== "terminal") return;
+  const runtime = terminalRuntimes.get(node.id);
+  if (!runtime || runtime.disposed) return;
+  runtime.disposed = true;
+  if (runtime.heartbeat) window.clearInterval(runtime.heartbeat);
+  runtime.heartbeat = null;
+  const socket = runtime.socket;
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "close" }));
+  }
+  writeStoredTerminalSessionID(runtime.targetID, "");
+  socket?.close();
+  runtime.socket = null;
+  clearQueuedTerminalOutput(runtime);
+  for (const disposable of runtime.disposables) disposable.dispose();
+  runtime.disposables = [];
+  runtime.terminal?.dispose();
+  runtime.terminal = null;
+  terminalRuntimes.delete(node.id);
+}
+
+function tabSelectionIncludes(tabs: ConnectionTab[], index: number, mode: "one" | "left" | "right" | "others" | "all", tabID: string) {
+  if (mode === "all") return true;
+  if (mode === "others") return tabs[index]?.id !== tabID;
+  if (mode === "left") return tabs.slice(0, index).some((item) => item.id === tabID);
+  if (mode === "right") return tabs.slice(index + 1).some((item) => item.id === tabID);
+  return tabs[index]?.id === tabID;
+}
+
+function sameTargetTabCount(tabs: Array<{ tab: ConnectionTab; target: Target }>, targetID: string) {
+  return tabs.filter((item) => item.target.id === targetID).length;
+}
+
+function sameTargetTabIndex(tabs: Array<{ tab: ConnectionTab; target: Target }>, targetID: string, absoluteIndex: number) {
+  let count = 0;
+  for (let index = 0; index <= absoluteIndex; index += 1) {
+    if (tabs[index]?.target.id === targetID) count += 1;
+  }
+  return count;
+}
+
+function estimateTerminalDimensions(container: HTMLElement, width: number, height: number, terminal: Terminal) {
+  const { charWidth, charHeight } = measureTerminalCell(container, terminal);
+  return {
+    cols: Math.max(20, Math.floor(width / charWidth)),
+    rows: Math.max(8, Math.floor(height / charHeight)),
+  };
+}
+
+function measureTerminalCell(container: HTMLElement, terminal: Terminal) {
+  const fontSize = terminal.options.fontSize || 13;
+  const row = terminal.element?.querySelector<HTMLElement>(".xterm-rows > div");
+  const rowRect = row?.getBoundingClientRect();
+  const helper = terminal.element?.querySelector<HTMLElement>(".xterm-helper-textarea");
+  const helperStyle = helper ? window.getComputedStyle(helper) : null;
+  const helperLineHeight = helperStyle ? Number.parseFloat(helperStyle.lineHeight) : 0;
+  const probe = document.createElement("span");
+  probe.textContent = "W".repeat(40);
+  probe.style.position = "absolute";
+  probe.style.visibility = "hidden";
+  probe.style.pointerEvents = "none";
+  probe.style.whiteSpace = "pre";
+  probe.style.fontFamily = '"SFMono-Regular", Consolas, "Liberation Mono", monospace';
+  probe.style.fontSize = `${fontSize}px`;
+  probe.style.lineHeight = String(terminal.options.lineHeight || 1);
+  probe.style.letterSpacing = `${terminal.options.letterSpacing || 0}px`;
+  container.appendChild(probe);
+  const rect = probe.getBoundingClientRect();
+  probe.remove();
+  return {
+    charWidth: Math.max(1, rect.width / 40),
+    charHeight: Math.max(1, rowRect?.height || helperLineHeight || fontSize * Number(terminal.options.lineHeight || 1)),
+  };
+}
+
+function shouldFocusTerminalByDefault() {
+  if (typeof window === "undefined") return false;
+  return window.innerWidth < 1680;
+}
+
+function getConnectCommandParam() {
+  if (typeof window === "undefined") return "";
+  return new URLSearchParams(window.location.search).get("command") || "";
+}
+
+function getConnectNewParam() {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("new") === "1";
+}
+
+function clearConnectCommandParam() {
+  clearConnectParam("command");
+}
+
+function clearConnectParam(name: string) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has(name)) return;
+  url.searchParams.delete(name);
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+function mergeSystemSnapshot(base?: TargetSystemSnapshot, metrics?: TargetSystemSnapshot, filesystems?: TargetSystemSnapshot): TargetSystemSnapshot | undefined {
+  if (!base) return undefined;
+  const metricSource = metrics || base;
+  return {
+    ...base,
+    uptime: metricSource.uptime || base.uptime,
+    load: metricSource.load || base.load,
+    cpu_percent: metricSource.cpu_percent,
+    memory: metricSource.memory || base.memory,
+    swap: metricSource.swap || base.swap,
+    processes: metricSource.processes || base.processes,
+    network: metricSource.network || base.network,
+    filesystems: filesystems?.filesystems || base.filesystems,
+    collected_at: metricSource.collected_at || base.collected_at,
+  };
+}
+
+function snapshotToSample(snapshot: TargetSystemSnapshot): MetricSample {
+  const network = sumNetwork(snapshot);
+  return {
+    at: snapshot.collected_at ? new Date(snapshot.collected_at).getTime() || Date.now() : Date.now(),
+    cpu: clampNumber(snapshot.cpu_percent),
+    memory: clampNumber(snapshot.memory?.percent || 0),
+    swap: clampNumber(snapshot.swap?.percent || 0),
+    rx: network.rx,
+    tx: network.tx,
+    network: Object.fromEntries((snapshot.network || []).map((item) => [
+      item.interface,
+      { rx: Math.max(0, item.rx_bytes || 0), tx: Math.max(0, item.tx_bytes || 0) },
+    ])),
+  };
+}
+
+function sumNetwork(snapshot: TargetSystemSnapshot) {
+  return (snapshot.network || []).reduce((total, item) => ({
+    rx: total.rx + Math.max(0, item.rx_bytes || 0),
+    tx: total.tx + Math.max(0, item.tx_bytes || 0),
+  }), { rx: 0, tx: 0 });
+}
+
+function buildNetworkRates(samples: MetricSample[]) {
+  const rx: number[] = [];
+  const tx: number[] = [];
+  for (let index = 1; index < samples.length; index += 1) {
+    const previous = samples[index - 1];
+    const current = samples[index];
+    const seconds = Math.max(1, (current.at - previous.at) / 1000);
+    rx.push(Math.max(0, current.rx - previous.rx) / seconds);
+    tx.push(Math.max(0, current.tx - previous.tx) / seconds);
+  }
+  return { rx, tx };
+}
+
+function buildInterfaceNetworkRates(samples: MetricSample[]) {
+  if (samples.length < 2) return {};
+  const previous = samples[samples.length - 2];
+  const current = samples[samples.length - 1];
+  const seconds = Math.max(1, (current.at - previous.at) / 1000);
+  const rates: Record<string, { rx: number; tx: number }> = {};
+  for (const [name, currentCounters] of Object.entries(current.network)) {
+    const previousCounters = previous.network[name];
+    if (!previousCounters) continue;
+    rates[name] = {
+      rx: Math.max(0, currentCounters.rx - previousCounters.rx) / seconds,
+      tx: Math.max(0, currentCounters.tx - previousCounters.tx) / seconds,
+    };
+  }
+  return rates;
+}
+
+function sparklinePoints(values: number[], fixedMax?: number) {
+  if (!values.length) return "0,28 100,28";
+  const items = values.length === 1 ? [values[0], values[0]] : values.slice(-MAX_SYSTEM_SAMPLES);
+  const max = Math.max(fixedMax || 0, ...items, 1);
+  return items.map((value, index) => {
+    const x = items.length === 1 ? 100 : (index / (items.length - 1)) * 100;
+    const y = 28 - (clampNumber((value / max) * 100) / 100) * 26;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  if (value < 1024) return `${value.toFixed(0)} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatBytesPerSecond(value?: number) {
+  if (value === undefined) return "-";
+  return `${formatBytes(value)}/s`;
+}
+
+function networkInterfaceName(value: string) {
+  if (!value || /^\d+$/.test(value)) return "网卡";
+  return value;
+}
+
+function clampNumber(value: number, min = 0, max = 100) {
+  if (!Number.isFinite(value)) return min;
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+}

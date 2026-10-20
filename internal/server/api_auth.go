@@ -1,0 +1,273 @@
+package server
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/qinyongliang/linksphere/internal/auth"
+	"github.com/qinyongliang/linksphere/internal/store"
+)
+
+func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if err := a.ensureServices(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	settings, err := a.loadAuthSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !settings.PublicRegistration {
+		writeError(w, http.StatusForbidden, "public registration is disabled")
+		return
+	}
+	var req struct {
+		Email       string `json:"email"`
+		DisplayName string `json:"display_name"`
+		Password    string `json:"password"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if !a.allowAuthAttempt(r, "register:"+strings.TrimSpace(req.Email), 10, 10*time.Minute) {
+		writeError(w, http.StatusTooManyRequests, "too many registration attempts")
+		return
+	}
+	user, token, err := a.auth.Register(r.Context(), req.Email, req.DisplayName, req.Password)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	setSessionCookie(w, r, a.sessionCookieName(), token)
+	writeJSON(w, http.StatusCreated, apiUserResponse{User: apiUserFromStore(user)})
+}
+
+func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if err := a.ensureServices(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if !a.allowAuthAttempt(r, "login:"+strings.TrimSpace(req.Email), 20, 5*time.Minute) {
+		writeError(w, http.StatusTooManyRequests, "too many login attempts")
+		return
+	}
+	user, token, err := a.auth.Login(r.Context(), req.Email, req.Password)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	setSessionCookie(w, r, a.sessionCookieName(), token)
+	writeJSON(w, http.StatusOK, apiUserResponse{User: apiUserFromStore(user)})
+}
+
+func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if err := a.ensureServices(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if cookie, err := r.Cookie(a.sessionCookieName()); err == nil {
+		_ = a.auth.Logout(r.Context(), cookie.Value)
+	}
+	clearSessionCookie(w, r, a.sessionCookieName())
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *App) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
+	if err := a.ensureServices(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cfg, err := a.dingTalkConfig(r)
+	if err != nil && !isNotFound(err) {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	settings, err := a.loadAuthSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	branding, err := a.loadBrandingSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"dingtalk": map[string]any{
+			"enabled": cfg.Enabled,
+		},
+		"registration_enabled": settings.PublicRegistration,
+		"branding":             branding,
+	})
+}
+
+func (a *App) handleDingTalkStart(w http.ResponseWriter, r *http.Request) {
+	if err := a.ensureServices(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !a.allowAuthAttempt(r, "dingtalk:start", 30, 5*time.Minute) {
+		writeError(w, http.StatusTooManyRequests, "too many dingtalk auth attempts")
+		return
+	}
+	cfg, err := a.dingTalkConfig(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	redirectAfter := r.URL.Query().Get("redirect_after")
+	if redirectAfter == "" {
+		redirectAfter = "/"
+	}
+	authURL, err := a.auth.BuildDingTalkAuthURL(r.Context(), cfg, redirectAfter)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if parsed, err := url.Parse(authURL); err == nil {
+		if state := strings.TrimSpace(parsed.Query().Get("state")); state != "" {
+			http.SetCookie(w, &http.Cookie{
+				Name: "gosshd_oauth_state", Value: state, Path: "/api/auth/dingtalk",
+				HttpOnly: true, Secure: isHTTPSRequest(r), SameSite: http.SameSiteLaxMode,
+				MaxAge: 600, Expires: time.Now().Add(10 * time.Minute),
+			})
+		}
+	}
+	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+func (a *App) handleDingTalkCallback(w http.ResponseWriter, r *http.Request) {
+	if err := a.ensureServices(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !a.allowAuthAttempt(r, "dingtalk:callback", 30, 5*time.Minute) {
+		writeError(w, http.StatusTooManyRequests, "too many dingtalk auth attempts")
+		return
+	}
+	stateCookie, err := r.Cookie("gosshd_oauth_state")
+	if err != nil || strings.TrimSpace(stateCookie.Value) == "" ||
+		strings.TrimSpace(stateCookie.Value) != strings.TrimSpace(r.URL.Query().Get("state")) {
+		writeError(w, http.StatusBadRequest, "oauth state mismatch")
+		return
+	}
+	cfg, err := a.dingTalkConfig(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	user, token, err := a.auth.CompleteDingTalkLogin(r.Context(), cfg, r.URL.Query().Get("code"), r.URL.Query().Get("state"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	setSessionCookie(w, r, a.sessionCookieName(), token)
+	http.SetCookie(w, &http.Cookie{Name: "gosshd_oauth_state", Value: "", Path: "/api/auth/dingtalk", HttpOnly: true, Secure: isHTTPSRequest(r), SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	_ = user
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (a *App) handleMe(w http.ResponseWriter, r *http.Request, user store.User) {
+	orgs, err := a.store.Repository().ListOrganizationsForUser(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	runtimeInfo, err := a.runtimeInfo(r.Context(), r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := apiMeResponse{User: apiUserFromStore(user), Runtime: runtimeInfo}
+	for _, org := range orgs {
+		apiOrg := apiOrganizationFromStore(org)
+		if member, err := a.store.Repository().GetOrganizationMember(r.Context(), org.ID, user.ID); err == nil {
+			apiOrg.Role = member.Role
+		}
+		out.Organizations = append(out.Organizations, apiOrg)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (a *App) handleChangeOwnPassword(w http.ResponseWriter, r *http.Request, user store.User) {
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+		ConfirmPassword string `json:"confirm_password"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if user.AuthProvider != "local" {
+		writeError(w, http.StatusBadRequest, "password changes are only available for local users")
+		return
+	}
+	newPassword := strings.TrimSpace(req.NewPassword)
+	if len(newPassword) < 8 {
+		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		return
+	}
+	if newPassword != strings.TrimSpace(req.ConfirmPassword) {
+		writeError(w, http.StatusBadRequest, "password confirmation does not match")
+		return
+	}
+	if err := a.auth.ChangePassword(r.Context(), user, req.CurrentPassword, newPassword); err != nil {
+		if err == auth.ErrInvalidCredentials {
+			writeError(w, http.StatusUnauthorized, "current password is incorrect")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *App) dingTalkConfig(r *http.Request) (auth.DingTalkConfig, error) {
+	setting, err := a.store.Repository().GetSystemSetting(r.Context(), settingDingTalk)
+	if err != nil {
+		return auth.DingTalkConfig{}, err
+	}
+	var raw struct {
+		Enabled      bool   `json:"enabled"`
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+		AuthURL      string `json:"auth_url"`
+		TokenURL     string `json:"token_url"`
+		UserInfoURL  string `json:"userinfo_url"`
+		RedirectURL  string `json:"redirect_url"`
+		DefaultOrgID string `json:"default_org_id"`
+		DefaultRole  string `json:"default_role"`
+	}
+	if err := json.Unmarshal([]byte(setting.ValueJSON), &raw); err != nil {
+		return auth.DingTalkConfig{}, err
+	}
+	redirectURL := strings.TrimSpace(raw.RedirectURL)
+	if redirectURL == "" {
+		redirectURL = publicBaseURL(r, a.cfg.publicHost()) + "/api/auth/dingtalk/callback"
+	}
+	return auth.DingTalkConfig{
+		Enabled:             raw.Enabled,
+		ClientID:            raw.ClientID,
+		ClientSecret:        raw.ClientSecret,
+		AuthURL:             raw.AuthURL,
+		TokenURL:            raw.TokenURL,
+		UserInfoURL:         raw.UserInfoURL,
+		RedirectURL:         redirectURL,
+		DefaultOrganization: raw.DefaultOrgID,
+		DefaultRole:         raw.DefaultRole,
+	}, nil
+}

@@ -1,0 +1,514 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Terminal } from "@xterm/xterm";
+import { RefreshCw, Search, ShieldCheck, Square } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, type ManualReviewChoice } from "../api";
+import { ManualReviewScopePicker } from "../components/ManualReviewScopePicker";
+import { HighlightedCommand } from "../components/HighlightedCommand";
+import { AuditTable, Empty, Modal, Pagination, Panel } from "../components/ui";
+import { useI18n } from "../i18n";
+import { formatDate, formSubmit } from "../lib/forms";
+import type { AuditLog, AuditRecording, ConsoleData } from "../types";
+
+export function AuditPage({ data }: { data: ConsoleData }) {
+  const { t } = useI18n();
+  const isClientMode = Boolean(data.runtime.client_mode);
+  const [filters, setFilters] = useState({ query: "", decision: "", request_type: "", started_from: "", started_to: "", page: 1, page_size: 20 });
+  const [replayID, setReplayID] = useState("");
+  const [liveID, setLiveID] = useState("");
+  const [authorizationOpen, setAuthorizationOpen] = useState(false);
+  const [handoffs, setHandoffs] = useState<AuditLog[]>([]);
+  const previousRunning = useRef<{ scope: string; logs: AuditLog[] }>({ scope: "", logs: [] });
+  const auditScope = `${data.activeOrg.id}:${isClientMode}`;
+  const retainFinished = filters.page === 1 && !filters.query && !filters.decision && !filters.request_type && !filters.started_from && !filters.started_to;
+  const canAuthorize = data.user.is_system_admin || data.activeOrg.role === "owner" || data.activeOrg.role === "admin";
+  const audit = useQuery({
+    queryKey: ["audit-page", data.activeOrg.id, isClientMode, filters],
+    queryFn: () => api.audit(isClientMode ? filters : { ...filters, organization_id: data.activeOrg.id }),
+    placeholderData: (previous, query) => query?.queryKey[1] === data.activeOrg.id ? previous : undefined,
+    refetchInterval: 3000,
+  });
+  useEffect(() => {
+    setFilters((current) => ({ ...current, page: 1 }));
+  }, [data.activeOrg.id]);
+  const replay = useQuery({ queryKey: ["audit-recording", replayID], queryFn: () => api.auditRecording(replayID), enabled: Boolean(replayID) });
+  const running = useQuery({
+    queryKey: ["audit-running", data.activeOrg.id, isClientMode],
+    queryFn: () => api.runningAudit(isClientMode ? {} : { organization_id: data.activeOrg.id }),
+    refetchInterval: 1000,
+  });
+  useEffect(() => {
+    const current = running.data?.logs || [];
+    if (previousRunning.current.scope !== auditScope) {
+      setHandoffs([]);
+      previousRunning.current = { scope: auditScope, logs: current };
+      return;
+    }
+    const activeIDs = new Set(current.map((item) => item.id));
+    const finished = previousRunning.current.logs.filter((item) => !activeIDs.has(item.id));
+    previousRunning.current = { scope: auditScope, logs: current };
+    if (!finished.length) return;
+    const ids = new Set(finished.map((item) => item.id));
+    if (retainFinished) {
+      setHandoffs((previous) => [...new Map([...previous, ...finished.map((item) => ({ ...item, running: false }))].map((item) => [item.id, item])).values()].slice(-filters.page_size));
+    }
+    void audit.refetch().then((result) => {
+      if (result.isSuccess && previousRunning.current.scope === auditScope) {
+        setHandoffs((previous) => previous.filter((item) => !ids.has(item.id)));
+      }
+    });
+  }, [running.data, auditScope]);
+  useEffect(() => { setHandoffs([]); }, [filters]);
+  const history = audit.data?.logs || data.auditPage.logs;
+  const activeLogs = running.data?.logs || [];
+  const activeIDs = new Set(activeLogs.map((item) => item.id));
+  const justFinished = retainFinished && previousRunning.current.scope === auditScope ? previousRunning.current.logs.filter((item) => !activeIDs.has(item.id)) : [];
+  const logs = [...new Map([...handoffs, ...justFinished, ...activeLogs, ...history].map((item) => [item.id, item])).values()].sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime());
+  return (
+    <div className="audit-page">
+      <section className="resource-head">
+        {canAuthorize && !isClientMode && (
+          <button type="button" className="primary" onClick={() => setAuthorizationOpen(true)}>
+            <ShieldCheck />{t("manualReviewTemporaryAuthorization")}
+          </button>
+        )}
+      </section>
+      <form className="toolbar" onSubmit={(event) => formSubmit(event, (body) => setFilters({
+        query: body.query || "",
+        decision: body.decision || "",
+        request_type: body.request_type || "",
+        started_from: body.started_from || "",
+        started_to: body.started_to || "",
+        page: 1,
+        page_size: filters.page_size,
+      }))}>
+        <Search />
+        <input name="query" defaultValue={filters.query} placeholder={t(isClientMode ? "auditClientSearchPlaceholder" : "auditSearchPlaceholder")} />
+        <select name="decision" defaultValue={filters.decision} aria-label={t("auditDecisionFilter")}>
+          <option value="">{t("commonAll")}</option>
+          <option value="allow">{t("commonAllow")}</option>
+          <option value="deny">{t("commonDeny")}</option>
+        </select>
+        <select name="request_type" defaultValue={filters.request_type} aria-label={t("auditTypeFilter")}>
+          <option value="">{t("commonAll")}</option>
+          <option value="exec">{t("auditTypeExec")}</option>
+          <option value="shell">{t("auditTypeInteractive")}</option>
+          <option value="web_terminal">{t("auditTypeWebTerminal")}</option>
+        </select>
+        <input name="started_from" type="datetime-local" defaultValue={filters.started_from} />
+        <input name="started_to" type="datetime-local" defaultValue={filters.started_to} />
+        <button type="submit">{t("search")}</button>
+        <button type="button" onClick={() => void audit.refetch()} disabled={audit.isFetching}>
+          <RefreshCw />
+          {t("commonRefresh")}
+        </button>
+      </form>
+      <Panel title={t("auditList")} subtitle="">
+        {logs.length ? <AuditTable logs={logs} compact={isClientMode} onReplay={(log) => setReplayID(log.id)} onLiveOutput={(log) => setLiveID(log.id)} /> : <Empty title={t("auditEmptyTitle")} body={t("auditEmptyBody")} />}
+      </Panel>
+      <Pagination page={filters.page} pageSize={filters.page_size} total={audit.data?.total || 0} disabled={audit.isLoading || audit.isPlaceholderData}
+        onChange={(page, page_size) => setFilters((current) => ({ ...current, page, page_size }))} />
+      {replayID && <AuditReplayModal recording={replay.data} fallbackLog={logs.find((item) => item.id === replayID)} loading={replay.isLoading} onClose={() => setReplayID("")} />}
+      {liveID && <RunningOutputModal key={liveID} id={liveID} fallbackLog={logs.find((item) => item.id === liveID)} onClose={() => setLiveID("")} />}
+      {authorizationOpen && <TemporaryAuthorizationModal data={data} onClose={() => setAuthorizationOpen(false)} />}
+    </div>
+  );
+}
+
+function TemporaryAuthorizationModal({ data, onClose }: { data: ConsoleData; onClose: () => void }) {
+  const { t } = useI18n();
+  const [userID, setUserID] = useState("");
+  const choice = useQuery({
+    queryKey: ["manual-review-choice", data.activeOrg.id, userID],
+    queryFn: () => api.manualReviewChoice(data.activeOrg.id, userID),
+    enabled: Boolean(userID),
+  });
+  return <Modal title={t("manualReviewTemporaryAuthorization")} onClose={onClose} wide>
+    <div className="temporary-authorization-shell">
+      <label className="field">
+        <span>{t("manualReviewSSHUser")}</span>
+        <select value={userID} onChange={(event) => setUserID(event.target.value)}>
+          <option value="">{t("manualReviewSelectUser")}</option>
+          {data.members.map((member) => (
+            <option key={member.user_id} value={member.user_id}>{member.display_name || member.email}</option>
+          ))}
+        </select>
+      </label>
+      {userID && choice.isLoading && <div className="policy-empty-line">{t("loading")}</div>}
+      {userID && choice.error && <div className="status error">{choice.error instanceof Error ? choice.error.message : t("manualReviewChoiceLoadFailed")}</div>}
+      {userID && choice.data && (
+        <TemporaryAuthorizationForm
+          key={`${userID}-${choice.data.auto_allow_expires_at || "inactive"}`}
+          data={data}
+          userID={userID}
+          choice={choice.data}
+          onClose={onClose}
+        />
+      )}
+    </div>
+  </Modal>;
+}
+
+function TemporaryAuthorizationForm({
+  data,
+  userID,
+  choice,
+  onClose,
+}: {
+  data: ConsoleData;
+  userID: string;
+  choice: ManualReviewChoice;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const validTargetIDs = new Set(data.targets.map((target) => target.id));
+  const [minutes, setMinutes] = useState(choice.active && choice.auto_allow_minutes ? choice.auto_allow_minutes : 10);
+  const [selectedTargetIDs, setSelectedTargetIDs] = useState(
+    choice.active && choice.auto_allow_target_ids?.length
+      ? choice.auto_allow_target_ids.filter((id) => validTargetIDs.has(id))
+      : data.targets.map((target) => target.id)
+  );
+  const [currentChoice, setCurrentChoice] = useState(choice);
+  const [saved, setSaved] = useState(false);
+  const [remaining, setRemaining] = useState(() => secondsUntil(currentChoice.auto_allow_expires_at || ""));
+  const save = useMutation({
+    mutationFn: () => api.putManualReviewChoice({
+      organization_id: data.activeOrg.id,
+      user_id: userID,
+      auto_allow_minutes: minutes,
+      auto_allow_target_ids: selectedTargetIDs,
+    }),
+    onSuccess: (result) => {
+      setCurrentChoice(result);
+      setSaved(true);
+    },
+    onError: () => setSaved(false),
+  });
+
+  useEffect(() => {
+    const update = () => setRemaining(secondsUntil(currentChoice.auto_allow_expires_at || ""));
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [currentChoice.auto_allow_expires_at]);
+
+  const valid = Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440 && selectedTargetIDs.length > 0;
+  return <form className="temporary-authorization-form" onSubmit={(event) => {
+    event.preventDefault();
+    if (valid) save.mutate();
+  }}>
+    <div className="temporary-authorization-meta">
+      <label className="field">
+        <span>{t("manualReviewDuration")}</span>
+        <div className="temporary-authorization-duration">
+          <input type="number" min="1" max="1440" step="1" value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} />
+          <span>{t("manualReviewMinutes")}</span>
+        </div>
+      </label>
+      {currentChoice.active && remaining > 0 && (
+        <span className="manual-review-remaining">{t("manualReviewRemaining").replace("{time}", formatRemaining(remaining))}</span>
+      )}
+    </div>
+    <ManualReviewScopePicker data={data} selectedTargetIDs={selectedTargetIDs} onChange={setSelectedTargetIDs} />
+    {saved && <div className="status success">{t("manualReviewAuthorizationSaved")}</div>}
+    {save.error && <div className="status error">{save.error instanceof Error ? save.error.message : t("manualReviewAuthorizationSaveFailed")}</div>}
+    <div className="modal-actions">
+      <button type="button" onClick={onClose}>{t("cancel")}</button>
+      <button type="submit" className="primary" disabled={!valid || save.isPending}>
+        <ShieldCheck />{save.isPending ? t("manualReviewSubmitting") : t("manualReviewAuthorize")}
+      </button>
+    </div>
+  </form>;
+}
+
+function secondsUntil(value: string) {
+  if (!value) return 0;
+  return Math.max(0, Math.ceil((new Date(value).getTime() - Date.now()) / 1000));
+}
+
+function formatRemaining(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  return `${minutes}:${String(totalSeconds % 60).padStart(2, "0")}`;
+}
+
+function RunningOutputModal({ id, fallbackLog, onClose }: { id: string; fallbackLog?: AuditLog; onClose: () => void }) {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const live = useQuery({
+    queryKey: ["audit-running-output", id],
+    queryFn: async () => {
+      const data = await api.runningAuditOutput(id);
+      const previous = queryClient.getQueryData<{ output?: string }>(["audit-running-output", id]);
+      return { ...data, output: data.output ?? previous?.output };
+    },
+    refetchInterval: (query) => query.state.data?.log.ended_at ? false : 700,
+    retry: false,
+  });
+  const log = live.data?.log || fallbackLog;
+  const output = live.data?.output ?? log?.live_output ?? "";
+  const finished = Boolean(log?.ended_at);
+  const stop = useMutation({
+    mutationFn: () => api.stopRunningAudit(id),
+    onSuccess: () => {
+      void live.refetch();
+      void queryClient.invalidateQueries({ queryKey: ["audit-running"] });
+      void queryClient.invalidateQueries({ queryKey: ["audit-page"] });
+    },
+    onError: () => { void live.refetch(); },
+  });
+  const started = log?.started_at ? new Date(log.started_at).getTime() : Date.now();
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (finished) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [finished]);
+  const duration = log?.ended_at ? new Date(log.ended_at).getTime() - started : Math.max(0, now - started);
+  return <Modal title={`${t("auditLiveOutput")} · ${t("auditTableDuration")}: ${durationText(duration)}`} onClose={onClose} wide className="audit-detail-modal">
+    <div className="terminal-player running-output-player">
+      <div className="terminal-meta running-output-meta">
+        <span><b>{t("auditTableTarget")}</b>{log?.target_name || log?.target_alias || "-"}</span>
+        <span className={`running-output-status${finished ? " finished" : ""}`} role="status">● {t(finished ? "auditCommandFinished" : stop.isPending || stop.isSuccess ? "auditCommandStopping" : "auditLiveOutput")}</span>
+      </div>
+      {log?.command && <HighlightedCommand command={log.command} className="audit-detail-content running-output-command" />}
+      <pre className="audit-detail-content running-output-content">{output || t("auditReplayEmpty")}</pre>
+      {live.error && <div className="status error" role="alert">{live.error.message}</div>}
+      {stop.error && !finished && <div className="status error" role="alert">{stop.error.message}</div>}
+      <div className="modal-actions">
+        <button type="button" className="danger" disabled={!log?.running || finished || stop.isPending || stop.isSuccess} onClick={() => stop.mutate()}>
+          <Square />{t(stop.isPending || stop.isSuccess && !finished ? "auditCommandStopping" : "auditCommandStop")}
+        </button>
+      </div>
+    </div>
+  </Modal>;
+}
+
+function AuditReplayModal({ recording, fallbackLog, loading, onClose }: { recording?: AuditRecording; fallbackLog?: AuditLog; loading: boolean; onClose: () => void }) {
+  const { t } = useI18n();
+  const log = recording?.log || fallbackLog;
+  return <Modal title={t("auditReplayTitle")} onClose={onClose} wide>
+    <div className="terminal-player">
+      <div className="terminal-meta">
+        <span><b>{t("auditTableTarget")}</b>{log?.target_name || log?.target_alias || "-"}</span>
+        <span><b>{t("auditTableStarted")}</b>{formatDate(log?.started_at)}</span>
+        <span><b>{t("auditReplayDuration")}</b>{durationText(auditDurationMs(log))}</span>
+      </div>
+      {loading && <div className="policy-empty-line">{t("loading")}</div>}
+      {!loading && recording && <TerminalReplay lines={recording.lines} />}
+      {!loading && !recording && <Empty title={t("auditReplayUnavailable")} body={t("auditReplayUnavailableBody")} />}
+    </div>
+  </Modal>;
+}
+
+function TerminalReplay({ lines }: { lines: unknown[] }) {
+  const { t } = useI18n();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  const renderedIndexRef = useRef(0);
+  const positionRef = useRef(0);
+  const animationRef = useRef(0);
+  const anchorRef = useRef({ clock: 0, position: 0 });
+  const [speed, setSpeed] = useState(1);
+  const [isPlaying, setIsPlaying] = useState(true);
+  const [position, setPosition] = useState(0);
+  const header = useMemo(() => parseHeader(lines), [lines]);
+  const events = useMemo(() => parseEvents(lines), [lines]);
+  const totalTime = useMemo(() => (events.length ? events[events.length - 1].time : 0), [events]);
+
+  const clampPosition = useCallback((next: number) => Math.max(0, Math.min(totalTime, next)), [totalTime]);
+
+  const writeToPosition = useCallback((next: number, force = false) => {
+    const terminal = terminalRef.current;
+    if (!terminal || !events.length) return;
+    if (force) {
+      terminal.reset();
+      renderedIndexRef.current = 0;
+    }
+    let index = renderedIndexRef.current;
+    while (index < events.length && events[index].time <= next + 0.001) {
+      terminal.write(events[index].data);
+      index += 1;
+    }
+    renderedIndexRef.current = index;
+  }, [events]);
+
+  const syncPosition = useCallback((next: number, forceWrite = false) => {
+    const clamped = clampPosition(next);
+    positionRef.current = clamped;
+    setPosition(clamped);
+    writeToPosition(clamped, forceWrite);
+    return clamped;
+  }, [clampPosition, writeToPosition]);
+
+  const seekTo = useCallback((next: number) => {
+    const clamped = syncPosition(next, true);
+    anchorRef.current = { clock: performance.now(), position: clamped };
+  }, [syncPosition]);
+
+  useEffect(() => {
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    positionRef.current = 0;
+    renderedIndexRef.current = 0;
+    setPosition(0);
+    setIsPlaying(Boolean(events.length));
+    const container = containerRef.current;
+    if (!container) return;
+    container.innerHTML = "";
+    const terminal = new Terminal({
+      cols: header.width || 100,
+      rows: Math.max(18, Math.min(header.height || 28, 42)),
+      convertEol: true,
+      cursorBlink: false,
+      fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+      fontSize: 13,
+      theme: { background: "#08111e", foreground: "#dbeafe", cursor: "#67e8f9" },
+    });
+    terminal.open(container);
+    terminalRef.current = terminal;
+    if (!events.length) {
+      terminal.write(t("auditReplayEmpty"));
+      return () => {
+        terminalRef.current = null;
+        terminal.dispose();
+      };
+    }
+    writeToPosition(0, true);
+    return () => {
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      animationRef.current = 0;
+      terminalRef.current = null;
+      terminal.dispose();
+    };
+  }, [events, header.height, header.width, t, writeToPosition]);
+
+  useEffect(() => {
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    animationRef.current = 0;
+    if (!isPlaying || !events.length || !totalTime) return;
+    anchorRef.current = { clock: performance.now(), position: positionRef.current };
+    const tick = (now: number) => {
+      const anchor = anchorRef.current;
+      const next = anchor.position + ((now - anchor.clock) / 1000) * speed;
+      const clamped = syncPosition(next);
+      if (clamped < totalTime) {
+        animationRef.current = requestAnimationFrame(tick);
+      } else {
+        animationRef.current = 0;
+        setIsPlaying(false);
+      }
+    };
+    animationRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      animationRef.current = 0;
+    };
+  }, [events.length, isPlaying, speed, syncPosition, totalTime]);
+
+  const togglePlaying = useCallback(() => {
+    if (!events.length || !totalTime) return;
+    if (!isPlaying && positionRef.current >= totalTime) seekTo(0);
+    setIsPlaying(!isPlaying);
+  }, [events.length, isPlaying, seekTo, totalTime]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== " " && event.key !== "Spacebar") return;
+      if (isInteractiveReplayTarget(event.target)) return;
+      event.preventDefault();
+      togglePlaying();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [togglePlaying]);
+
+  const elapsedMs = Math.round(position * 1000);
+  const totalMs = Math.round(totalTime * 1000);
+  const progressRatio = totalTime ? position / totalTime : 0;
+
+  return <>
+    <div className="terminal-controls">
+      <button type="button" onClick={togglePlaying}>{isPlaying ? t("auditReplayPause") : t("auditReplayPlay")}</button>
+      <label>{t("auditReplaySpeed")}
+        <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))}>
+          <option value={1}>1x</option>
+          <option value={2}>2x</option>
+          <option value={4}>4x</option>
+        </select>
+      </label>
+      <div className="terminal-progress">
+        <div
+          className="terminal-progress-track"
+          role="slider"
+          tabIndex={0}
+          aria-label={t("auditReplaySeek")}
+          aria-valuemin={0}
+          aria-valuemax={totalMs}
+          aria-valuenow={elapsedMs}
+          onClick={(event) => {
+            if (!totalTime) return;
+            const rect = event.currentTarget.getBoundingClientRect();
+            seekTo(((event.clientX - rect.left) / rect.width) * totalTime);
+          }}
+          onKeyDown={(event) => {
+            if (!totalTime) return;
+            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+              event.preventDefault();
+              const step = event.shiftKey ? 10 : 1;
+              seekTo(positionRef.current + (event.key === "ArrowRight" ? step : -step));
+            }
+            if (event.key === "Home") {
+              event.preventDefault();
+              seekTo(0);
+            }
+            if (event.key === "End") {
+              event.preventDefault();
+              seekTo(totalTime);
+            }
+          }}
+        >
+          <div className="terminal-progress-bar" style={{ width: `${progressRatio * 100}%`, minWidth: position > 0 ? 2 : 0 }} />
+        </div>
+        <span className="terminal-progress-time">{durationText(elapsedMs)} / {durationText(totalMs)}</span>
+      </div>
+      <button type="button" onClick={() => {
+        seekTo(0);
+        setIsPlaying(true);
+      }}>{t("auditReplayRestart")}</button>
+    </div>
+    <div className="terminal-output" ref={containerRef} />
+  </>;
+}
+
+function parseHeader(lines: unknown[]) {
+  const first = lines[0];
+  if (!first || Array.isArray(first) || typeof first !== "object") return { width: 100, height: 28 };
+  const record = first as Record<string, unknown>;
+  return { width: Number(record.width || 100), height: Number(record.height || 28) };
+}
+
+function parseEvents(lines: unknown[]) {
+  return lines.flatMap((line) => {
+    if (!Array.isArray(line) || line.length < 3 || line[1] !== "o" || typeof line[2] !== "string") return [];
+    return [{ time: Number(line[0] || 0), data: line[2] }];
+  });
+}
+
+function durationText(value?: number) {
+  if (value === undefined || value === null || Number.isNaN(value)) return "-";
+  if (value < 1000) return `${value}ms`;
+  return `${Math.round(value / 100) / 10}s`;
+}
+
+function auditDurationMs(log?: AuditLog) {
+  if (!log) return undefined;
+  if (log.recording_duration_ms && log.recording_duration_ms > 0) return log.recording_duration_ms;
+  if (!log.ended_at) return undefined;
+  const duration = new Date(log.ended_at).getTime() - new Date(log.started_at).getTime();
+  return Number.isFinite(duration) && duration >= 0 ? duration : undefined;
+}
+
+function isInteractiveReplayTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return Boolean(target.closest("button, input, select, textarea, [role='button'], [role='combobox']"));
+}

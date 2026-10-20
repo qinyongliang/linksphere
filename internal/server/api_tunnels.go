@@ -1,0 +1,426 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"net"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/qinyongliang/linksphere/internal/forward"
+	"github.com/qinyongliang/linksphere/internal/store"
+)
+
+type apiTunnel struct {
+	store.Tunnel
+	tunnelStatus
+	Source               string `json:"source"`
+	Temporary            bool   `json:"temporary,omitempty"`
+	CreatorName          string `json:"creator_name,omitempty"`
+	ForwardType          string `json:"forward_type,omitempty"`
+	RemoteAddress        string `json:"remote_address,omitempty"`
+	PublicKeyFingerprint string `json:"public_key_fingerprint,omitempty"`
+}
+
+func (a *App) validateTunnel(ctx context.Context, user store.User, orgID string, c store.TunnelConfig) error {
+	if _, err := a.store.Repository().GetOrganization(ctx, orgID); err != nil {
+		return errors.New("organization not found")
+	}
+	if err := a.requireOrganizationAdmin(ctx, orgID, user); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.Name) == "" || len(c.Name) > 128 {
+		return errors.New("name must contain 1–128 characters")
+	}
+	if c.Protocol != "http" && net.ParseIP(c.ListenHost) == nil {
+		return errors.New("listen host must be an IP address")
+	}
+	if c.Protocol != "http" && (c.ListenPort < 1 || c.ListenPort > 65535 || c.DestinationPort < 1 || c.DestinationPort > 65535) {
+		return errors.New("ports must be between 1 and 65535")
+	}
+	if c.Protocol != "http" && (strings.TrimSpace(c.DestinationHost) == "" || len(c.DestinationHost) > 253 || strings.ContainsAny(c.DestinationHost, " /\\\t\r\n")) {
+		return errors.New("invalid destination host")
+	}
+	if c.DurationSeconds < 0 || c.DurationSeconds > 365*24*3600 {
+		return errors.New("duration must be 0 (permanent) or at most 365 days")
+	}
+	if c.Protocol != "port" && c.Protocol != "http" {
+		return errors.New("protocol must be port or http")
+	}
+	udp := false
+	if c.Protocol == "port" {
+		if len(c.Transports) == 0 {
+			return errors.New("select at least one transport: tcp or udp")
+		}
+		seen := map[string]bool{}
+		for _, network := range c.Transports {
+			if (network != "tcp" && network != "udp") || seen[network] {
+				return errors.New("transports must contain unique tcp and/or udp values")
+			}
+			seen[network] = true
+			udp = udp || network == "udp"
+		}
+	} else if len(c.Transports) != 0 {
+		return errors.New("transports require port protocol")
+	}
+	endpoints := []string{c.EntryTargetID}
+	if c.Protocol == "http" {
+		if _, err := forward.HTTPListeners(c.HTTP); err != nil {
+			return err
+		}
+		if _, err := forward.Compile(c.HTTP); err != nil {
+			return err
+		}
+		for _, s := range c.HTTP.Servers {
+			for _, l := range s.Locations {
+				endpoints = append(endpoints, l.ExitTargetID)
+			}
+		}
+	} else {
+		if c.HTTP != nil {
+			return errors.New("HTTP blocks require HTTP protocol")
+		}
+		endpoints = append(endpoints, c.ExitTargetID)
+	}
+	checked := map[string]bool{}
+	for _, id := range endpoints {
+		if checked[id] {
+			continue
+		}
+		checked[id] = true
+		if id == "" {
+			if !user.IsSystemAdmin {
+				return errors.New("bastion endpoints require system admin access")
+			}
+			continue
+		}
+		target, err := a.store.Repository().GetSSHTarget(ctx, id)
+		if err != nil {
+			return errors.New("endpoint machine not found")
+		}
+		if target.OwnerType != "organization" || target.OwnerID != orgID {
+			return errors.New("endpoint machine must belong to this organization")
+		}
+		if target.TargetType != store.TargetAgent && target.TargetType != store.TargetDirect {
+			return errors.New("unsupported endpoint machine type")
+		}
+		if udp && target.TargetType != store.TargetAgent {
+			return errors.New("UDP requires bastion or Agent endpoints; SSH endpoints do not support UDP forwarding")
+		}
+		// Validate every jump host as well: a saved chain must not cross organizations.
+		seen := map[string]bool{id: true}
+		for target.ProxyTargetID != "" {
+			if seen[target.ProxyTargetID] || len(seen) > 3 {
+				return errors.New("invalid jump host chain")
+			}
+			seen[target.ProxyTargetID] = true
+			target, err = a.store.Repository().GetSSHTarget(ctx, target.ProxyTargetID)
+			if err != nil || target.OwnerType != "organization" || target.OwnerID != orgID {
+				return errors.New("jump host must belong to this organization")
+			}
+		}
+	}
+	return nil
+}
+func (a *App) handleListTunnels(w http.ResponseWriter, r *http.Request, u store.User) {
+	org := r.URL.Query().Get("organization_id")
+	if org == "" {
+		writeError(w, 400, "organization_id required")
+		return
+	}
+	if a.requireOrganizationAdmin(r.Context(), org, u) != nil {
+		writeError(w, 403, "organization admin required")
+		return
+	}
+	out, err := a.listTunnelViews(r.Context(), u, org)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"tunnels": out})
+}
+func (a *App) handleSaveTunnel(w http.ResponseWriter, r *http.Request, u store.User) {
+	var body struct {
+		store.TunnelConfig
+		OrganizationID string `json:"organization_id"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	t := store.Tunnel{OrganizationID: body.OrganizationID, CreatedBy: u.ID}
+	if id := r.PathValue("id"); id != "" {
+		var err error
+		t, err = a.store.Repository().GetTunnel(r.Context(), id)
+		if err != nil {
+			writeError(w, 404, "tunnel not found")
+			return
+		}
+	}
+	if a.requireOrganizationAdmin(r.Context(), t.OrganizationID, u) != nil {
+		writeError(w, 403, "organization admin required")
+		return
+	}
+	t.TunnelConfig = body.TunnelConfig
+	saved, err := a.saveManagedTunnel(r.Context(), u, t)
+	if err != nil {
+		var invalid tunnelConfigError
+		if errors.As(err, &invalid) {
+			writeError(w, 400, err.Error())
+		} else {
+			writeError(w, 500, err.Error())
+		}
+		return
+	}
+	writeJSON(w, 200, map[string]any{"tunnel": saved})
+}
+func (a *App) handleTunnelAction(w http.ResponseWriter, r *http.Request, u store.User) {
+	if strings.HasPrefix(r.PathValue("id"), "ssh-") {
+		t, err := a.temporaryTunnel(r.Context(), u, r.PathValue("id"))
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, 404, "tunnel not found")
+			} else {
+				writeError(w, 403, "organization admin required")
+			}
+			return
+		}
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/stop") {
+			writeError(w, 400, "temporary SSH tunnels can only be stopped; recreate them from the SSH client")
+			return
+		}
+		t.stop()
+		writeJSON(w, 200, map[string]bool{"ok": true})
+		return
+	}
+	repo := a.store.Repository()
+	t, err := repo.GetTunnel(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, 404, "tunnel not found")
+		} else {
+			writeError(w, 500, err.Error())
+		}
+		return
+	}
+	if a.requireOrganizationAdmin(r.Context(), t.OrganizationID, u) != nil {
+		writeError(w, 403, "organization admin required")
+		return
+	}
+	if r.Method == http.MethodDelete {
+		if err = repo.DeleteTunnel(r.Context(), t.ID); err == nil {
+			a.tunnels.stop(t.ID)
+		}
+	} else {
+		saved, operationErr := a.setManagedTunnelEnabled(r.Context(), u, t, strings.HasSuffix(r.URL.Path, "/enable"))
+		if operationErr != nil {
+			var invalid tunnelConfigError
+			if errors.As(operationErr, &invalid) {
+				writeError(w, 400, operationErr.Error())
+			} else {
+				writeError(w, 500, operationErr.Error())
+			}
+			return
+		}
+		writeJSON(w, 200, map[string]any{"tunnel": saved})
+		return
+	}
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (a *App) tunnelAPIStatus(t store.Tunnel) tunnelStatus {
+	if edgeManaged(t) && a.forwards != nil {
+		return a.forwards.status(t)
+	}
+	state := a.tunnels.status(t)
+	total, active, direct, err := a.tunnels.traffic(t)
+	if err != nil {
+		state.Error = err.Error()
+	}
+	state.Traffic = total
+	state.Connections = active
+	state.DirectConnections = direct
+	a.tunnels.mu.Lock()
+	metrics := a.tunnels.metrics[t.ID]
+	a.tunnels.mu.Unlock()
+	state.Paths = []tunnelConnectionPath{}
+	if metrics != nil {
+		state.Paths = metrics.pathsSnapshot()
+	}
+	state.Transport = "relay"
+	if active > 0 && direct == active {
+		state.Transport = "direct"
+	} else if direct > 0 {
+		state.Transport = "mixed"
+	} else if t.Enabled {
+		a.tunnels.mu.Lock()
+		run := a.tunnels.runs[t.ID]
+		eligible := false
+		if run != nil {
+			run.mu.Lock()
+			eligible = run.peerEnabled
+			run.mu.Unlock()
+		}
+		a.tunnels.mu.Unlock()
+		if eligible {
+			state.Transport = "negotiating"
+		}
+	}
+	return state
+}
+func (a *App) handleTunnelTraffic(w http.ResponseWriter, r *http.Request, u store.User) {
+	t, err := a.lookupTunnel(r.Context(), u, r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, 404, "tunnel not found")
+		} else {
+			writeError(w, 403, "organization admin required")
+		}
+		return
+	}
+	if a.requireOrganizationAdmin(r.Context(), t.OrganizationID, u) != nil {
+		writeError(w, 403, "organization admin required")
+		return
+	}
+	now := time.Now().Unix()
+	to := now - now%300 + 300
+	from := to - 24*3600
+	if v := r.URL.Query().Get("from"); v != "" {
+		from, err = strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeError(w, 400, "from must be Unix seconds")
+			return
+		}
+	}
+	if v := r.URL.Query().Get("to"); v != "" {
+		to, err = strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeError(w, 400, "to must be Unix seconds")
+			return
+		}
+	}
+	if from < 0 || to <= from || to-from > 31*24*3600+300 {
+		writeError(w, 400, "time range must be between 0 and 31 days")
+		return
+	}
+	from -= from % 300
+	sourceIP, err := parseTunnelSourceFilter(r.URL.Query().Get("source_ip"))
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	out, err := a.tunnelTrafficStatistics(r.Context(), t, from, to, sourceIP)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, out)
+}
+
+type tunnelSourceTraffic struct {
+	store.TunnelTraffic
+	ActiveConnections int `json:"active_connections"`
+}
+type tunnelTrafficStatistics struct {
+	IntervalSeconds   int                   `json:"interval_seconds"`
+	Buckets           []store.TunnelTraffic `json:"buckets"`
+	Sources           []tunnelSourceTraffic `json:"sources"`
+	ActiveConnections int                   `json:"active_connections"`
+}
+
+func parseTunnelSourceFilter(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "unknown" {
+		return value, nil
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return ip.String(), nil
+	}
+	return "", errors.New("source_ip must be an IPv4 or IPv6 address, or unknown")
+}
+
+func mergeTunnelTraffic(dst *store.TunnelTraffic, src store.TunnelTraffic) {
+	dst.RelayUp += src.RelayUp
+	dst.RelayDown += src.RelayDown
+	dst.DirectUp += src.DirectUp
+	dst.DirectDown += src.DirectDown
+	dst.ConnectionsOpened += src.ConnectionsOpened
+	dst.PeakConnections = max(dst.PeakConnections, src.PeakConnections)
+}
+
+// Merge audit storage and unflushed live counters under one lock.
+func (a *App) tunnelTrafficStatistics(ctx context.Context, t store.Tunnel, from, to int64, sourceIP string) (tunnelTrafficStatistics, error) {
+	if edgeManaged(t) && a.forwards != nil {
+		return a.forwardTrafficStatistics(ctx, t, from, to, sourceIP)
+	}
+	out := tunnelTrafficStatistics{IntervalSeconds: 300, Buckets: []store.TunnelTraffic{}, Sources: []tunnelSourceTraffic{}}
+	a.tunnels.mu.Lock()
+	metrics := a.tunnels.metrics[t.ID]
+	a.tunnels.mu.Unlock()
+	if metrics != nil {
+		metrics.mu.Lock()
+		defer metrics.mu.Unlock()
+		for ip := range metrics.sources {
+			metrics.change(ip, func(*store.TunnelTraffic) {})
+		}
+		out.ActiveConnections = metrics.active
+		if sourceIP != "" {
+			out.ActiveConnections = metrics.sources[sourceIP]
+		}
+	}
+	rows, err := a.audit.Repository().TunnelTrafficForSource(ctx, t.ID, from, to, sourceIP)
+	if err != nil {
+		return out, err
+	}
+	sourceRows, err := a.audit.Repository().TunnelTrafficSources(ctx, t.ID, from, to, sourceIP)
+	if err != nil {
+		return out, err
+	}
+	sources := map[string]store.TunnelTraffic{}
+	for _, v := range sourceRows {
+		sources[v.SourceIP] = v
+	}
+	values := map[int64]store.TunnelTraffic{}
+	for _, v := range rows {
+		values[v.BucketStart] = v
+	}
+	if metrics != nil {
+		for key, v := range metrics.buckets {
+			if key.bucket < from || key.bucket >= to {
+				continue
+			}
+			if key.sourceIP == sourceIP {
+				old := values[key.bucket]
+				mergeTunnelTraffic(&old, v)
+				values[key.bucket] = old
+			}
+			if key.sourceIP != "" && (sourceIP == "" || key.sourceIP == sourceIP) {
+				old := sources[key.sourceIP]
+				old.SourceIP = key.sourceIP
+				mergeTunnelTraffic(&old, v)
+				sources[key.sourceIP] = old
+			}
+		}
+	}
+	for bucket := from; bucket < to; bucket += 300 {
+		v := values[bucket]
+		v.BucketStart, v.SourceIP = bucket, sourceIP
+		out.Buckets = append(out.Buckets, v)
+	}
+	for ip, v := range sources {
+		row := tunnelSourceTraffic{TunnelTraffic: v}
+		if metrics != nil {
+			row.ActiveConnections = metrics.sources[ip]
+		}
+		out.Sources = append(out.Sources, row)
+	}
+	sort.Slice(out.Sources, func(i, j int) bool { return out.Sources[i].SourceIP < out.Sources[j].SourceIP })
+	return out, nil
+}

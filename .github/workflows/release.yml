@@ -1,0 +1,225 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label used in archive names when run manually
+        required: false
+        default: manual
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build release archives
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check public repository content
+        run: node scripts/check-public-content.mjs
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.0.7 --activate
+          pnpm install --frozen-lockfile
+
+      - name: Build frontend assets
+        shell: bash
+        run: pnpm run build
+
+      - name: Test tunnel diagnostics, source statistics and migrations
+        run: |
+          node --test web/e2e/workspace_layout.test.mjs
+          node --test web/e2e/file_drop.test.mjs web/e2e/file_selection.test.mjs web/e2e/file_preview.test.mjs web/e2e/file_transfer_handshake.test.mjs web/e2e/p2p_channel.test.mjs
+          go test ./internal/store -count=1
+          go test -race ./internal/filetransfer ./internal/agent -run 'Test(Receive|Send|FileUpload|FileDownload)' -count=1
+          go test -race ./internal/server -run '^Test(File(Upload|Download|Transfer)|HTTPUploadAuditIncludesRequestBodyTransfer|AuditAPIPreservesSubsecondTimestamps)' -count=1
+          go test -race ./internal/forward ./internal/protocol/types ./internal/tunnel -count=1 -timeout=5m
+          go test -race ./internal/agent ./internal/server -run 'HTTP|Forward|Edge|Telemetry|Port|UDP|Datagram' -count=1 -timeout=5m
+          go test ./internal/tunnel -count=1
+          go test ./internal/store -run '^TestMainStorePooledConnectionsWaitForWriters$' -count=1
+          go test ./internal/server -run '^Test(Tunnel|TemporarySSHForward|TemporarySSHRemote|MCPTunnel)' -count=1
+
+      - name: Verify control styles and tunnel traffic in browser
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/ui-e2e" --no-save playwright@1.56.1
+          node "$RUNNER_TEMP/ui-e2e/node_modules/playwright/cli.js" install --with-deps chromium
+          export GOSSHD_UI_E2E_NODE="$(command -v node)"
+          export GOSSHD_UI_E2E_PLAYWRIGHT="$RUNNER_TEMP/ui-e2e/node_modules/playwright"
+          export GOSSHD_UI_E2E_BROWSER="$(node -e 'console.log(require(process.argv[1]).chromium.executablePath())' "$GOSSHD_UI_E2E_PLAYWRIGHT")"
+          go test ./internal/server -run '^Test(ControlStyles|TunnelTraffic|HTTPForwarding|PortForwarding|FileUpload(ViaAgentSSH)?|FileDownload(ViaAgentSSH)?|FileSelection|FilePreview|DraggableWorkspace)UIE2EWithBrowser$' -count=1 -timeout=8m
+
+      - name: Test Android installers, ABI selection and update downloads
+        shell: bash
+        run: go test ./internal/protocol ./internal/server -run 'Test(DefaultShellAndroid|Android|DownloadAgentAndroid|AgentWSAndroid|AgentReleaseURLAndroid)' -count=1 -timeout=3m
+
+      - name: Set up Java for Android SDK tools
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK tools
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: false
+
+      - name: Build binaries and packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          fi
+
+          server_platforms=(
+            "linux amd64 - linux-amd64 amd64"
+            "linux arm64 - linux-arm64 arm64"
+            # "linux 386 - linux-386 386"
+            # "linux arm 6 linux-armv6 armv6"
+            # "linux arm 7 linux-armv7 armv7"
+            # "linux riscv64 - linux-riscv64 riscv64"
+            "windows amd64 - windows-amd64 amd64"
+            # "windows arm64 - windows-arm64 arm64"
+            # "windows 386 - windows-386 386"
+            "darwin amd64 - darwin-amd64 amd64"
+            "darwin arm64 - darwin-arm64 arm64"
+            # "freebsd amd64 - freebsd-amd64 amd64"
+            # "freebsd arm64 - freebsd-arm64 arm64"
+            # "openbsd amd64 - openbsd-amd64 amd64"
+            # "openbsd arm64 - openbsd-arm64 arm64"
+          )
+
+          agent_platforms=(
+            "linux amd64 - linux-amd64 amd64"
+            "linux arm64 - linux-arm64 arm64"
+            # "linux 386 - linux-386 386"
+            # "linux arm 6 linux-armv6 armv6"
+            # "linux arm 7 linux-armv7 armv7"
+            # "linux riscv64 - linux-riscv64 riscv64"
+            "windows amd64 - windows-amd64 amd64"
+            # "windows arm64 - windows-arm64 arm64"
+            # "windows 386 - windows-386 386"
+            "darwin amd64 - darwin-amd64 amd64"
+            "darwin arm64 - darwin-arm64 arm64"
+            # "freebsd amd64 - freebsd-amd64 amd64"
+            # "freebsd arm64 - freebsd-arm64 arm64"
+            # "openbsd amd64 - openbsd-amd64 amd64"
+            # "openbsd arm64 - openbsd-arm64 arm64"
+            # "netbsd amd64 - netbsd-amd64 amd64"
+            # "netbsd arm64 - netbsd-arm64 arm64"
+          )
+
+          build_go() {
+            goos="$1"
+            goarch="$2"
+            goarm="$3"
+            output="$4"
+            ldflags_extra="$5"
+            package="$6"
+            env_args=(CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch")
+            if [ "$goarm" != "-" ]; then
+              env_args+=(GOARM="$goarm")
+            fi
+            env "${env_args[@]}" go build -trimpath -ldflags="-s -w $ldflags_extra" -o "$output" "$package"
+          }
+
+          mkdir -p build/server build/agent dist
+
+          for item in "${server_platforms[@]}"; do
+            read -r goos goarch goarm platform agent_arch <<< "$item"
+            suffix=""
+            if [ "$goos" = "windows" ]; then
+              suffix=".exe"
+            fi
+
+            server_dir="build/server/$platform"
+            mkdir -p "$server_dir"
+
+            echo "building server $platform"
+            build_go "$goos" "$goarch" "$goarm" "$server_dir/gosshd-server$suffix" "-X main.version=$version" ./cmd/gosshd-server
+          done
+
+          for item in "${agent_platforms[@]}"; do
+            read -r goos goarch goarm platform agent_arch <<< "$item"
+            suffix=""
+            if [ "$goos" = "windows" ]; then
+              suffix=".exe"
+            fi
+
+            agent_dir="build/agent/$goos/$agent_arch"
+            mkdir -p "$agent_dir"
+
+            echo "building agent $platform"
+            build_go "$goos" "$goarch" "$goarm" "$agent_dir/gosshd-agent$suffix" "-X main.version=$version" ./cmd/gosshd-agent
+            cp "$agent_dir/gosshd-agent$suffix" "dist/gosshd-agent-$version-$goos-$agent_arch$suffix"
+          done
+
+          for item in "${server_platforms[@]}"; do
+            read -r goos _ _ platform _ <<< "$item"
+            suffix=""
+            if [ "$goos" = "windows" ]; then
+              suffix=".exe"
+            fi
+
+            package_dir="package/gosshd-$platform"
+            mkdir -p "$package_dir"
+            cp "build/server/$platform/gosshd-server$suffix" "$package_dir/"
+            cp README.md README.zh-CN.md run.sh run.ps1 "$package_dir/"
+            cp LICENSE* "$package_dir/" 2>/dev/null || true
+
+            if [ "$goos" = "windows" ]; then
+              (cd package && zip -9 -r "../dist/gosshd-$version-$platform.zip" "gosshd-$platform")
+            else
+              tar -C package -czf "dist/gosshd-$version-$platform.tar.gz" "gosshd-$platform"
+            fi
+            rm -rf "$package_dir"
+          done
+
+          # ARMv7 requires NDK/cgo; keep Android-only flags out of build_go.
+          sdkmanager "ndk;27.2.12479018"
+          ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018" bash scripts/build-agent-android.sh "$version"
+          (cd dist && sha256sum * > checksums.txt)
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosshd-release-archives
+          path: dist/*
+
+      - name: Upload release assets
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/gosshd-agent-*
+            dist/checksums.txt

@@ -1,0 +1,361 @@
+export type Owner = {
+  owner_type: "organization";
+  owner_id: string;
+};
+
+export type User = {
+  id: string;
+  email: string;
+  display_name: string;
+  is_system_admin: boolean;
+  auth_provider: string;
+  disabled_at?: string;
+};
+
+export type Organization = {
+  id: string;
+  name: string;
+  slug: string;
+  is_personal: boolean;
+  role?: "owner" | "admin" | "member";
+};
+
+export type Runtime = {
+  ssh_host: string;
+  ssh_port: number;
+  client_mode?: boolean;
+  local_terminal_target_id?: string;
+  app_name: string;
+  app_description: string;
+  app_icon?: string;
+};
+
+export type PublicKey = {
+  id: string;
+  name: string;
+  fingerprint: string;
+  created_at: string;
+};
+
+export type MCPToken = {
+  id: string;
+  name: string;
+  token_value?: string;
+  tool_groups?: string[];
+  created_at: string;
+  last_used_at?: string;
+};
+
+export type MCPTokenCreateResponse = {
+  token: MCPToken;
+  token_value: string;
+  mcp_json: unknown;
+};
+
+export type Member = {
+  user_id: string;
+  email: string;
+  display_name: string;
+  role: "owner" | "admin" | "member";
+  joined_at?: string;
+  created_at?: string;
+};
+
+export type UserGroup = {
+  id: string;
+  name: string;
+  slug: string;
+  is_default?: boolean;
+  target_ids?: string[];
+  members?: Member[];
+};
+
+export type Target = {
+  id: string;
+  owner_type: string;
+  owner_id: string;
+  target_type: "direct" | "agent";
+  name: string;
+  alias: string;
+  host: string;
+  port: number;
+  remote_username: string;
+  auth_type: "password" | "private_key";
+  tags: string[];
+  tag_colors?: Record<string, string>;
+  endpoint?: string;
+  agent_id?: string;
+  proxy_target_id?: string;
+  credential_id?: string;
+  folder_id?: string;
+};
+
+export type TemporarySSHAuthorization = {
+  id: string;
+  target_id: string;
+  name: string;
+  token: string;
+  created_by: string;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SSHCredential = {
+  id: string;
+  owner_type: string;
+  owner_id: string;
+  name: string;
+  username: string;
+  auth_type: "password" | "private_key";
+  created_at: string;
+  updated_at: string;
+};
+
+export type TargetFolder = {
+  id: string;
+  owner_type: string;
+  owner_id: string;
+  parent_id?: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BatchCommandHistory = {
+  id: string;
+  owner_type: string;
+  owner_id: string;
+  command: string;
+  execute_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type UserSettings = {
+  connect_open_mode: "popup" | "tab";
+  connect_attach_existing: boolean;
+};
+
+export type TargetTag = {
+  tag: string;
+  color: string;
+};
+
+export type TargetSystemUsage = {
+  used_bytes: number;
+  total_bytes: number;
+  percent: number;
+};
+
+export type TargetSystemProcess = {
+  rss_bytes: number;
+  cpu_percent: number;
+  command: string;
+};
+
+export type TargetSystemNetwork = {
+  interface: string;
+  rx_bytes: number;
+  tx_bytes: number;
+};
+
+export type TargetSystemFilesystem = {
+  path: string;
+  used_bytes: number;
+  total_bytes: number;
+  percent: number;
+};
+
+export type TargetSystemSnapshot = {
+  os?: string;
+  hostname?: string;
+  ip?: string;
+  public_ip?: string;
+  public_ipv4?: string;
+  public_ipv6?: string;
+  uptime?: string;
+  load?: string;
+  cpu_percent: number;
+  memory: TargetSystemUsage;
+  swap: TargetSystemUsage;
+  processes: TargetSystemProcess[];
+  network: TargetSystemNetwork[];
+  filesystems: TargetSystemFilesystem[];
+  collected_at?: string;
+};
+
+export type LLMConfig = {
+  id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  timeout_seconds: number;
+};
+
+export type PromptResource = {
+  id: string;
+  title: string;
+  content: string;
+  is_default?: boolean;
+  is_readonly?: boolean;
+};
+
+export type PolicyRule = {
+  id: string;
+  rule_type: "whitelist" | "blacklist";
+  pattern_type: "exact" | "prefix" | "contains";
+  pattern: string;
+};
+
+export type Policy = {
+  id: string;
+  name: string;
+  default_action: "allow" | "deny";
+  llm_config_id?: string;
+  llm_prompt_id?: string;
+  ip_allowlist?: string;
+  allow_port_forward?: boolean;
+  allow_upload?: boolean;
+  allow_download?: boolean;
+  allow_ssh_interactive?: boolean;
+  allow_web_terminal?: boolean;
+  allow_manual_review?: boolean;
+  manual_review_timeout_seconds?: number;
+  rules?: PolicyRule[];
+  target_ids?: string[];
+  target_tags?: string[];
+  user_group_ids?: string[];
+};
+
+export type AuditLog = {
+  id: string;
+  organization_id?: string;
+  user_id?: string;
+  target_id?: string;
+  user_display_name?: string;
+  user_email?: string;
+  public_key_name?: string;
+  public_key_fingerprint?: string;
+  target_name?: string;
+  target_alias?: string;
+  target_endpoint?: string;
+  command: string;
+  request_type: string;
+  policy_decision: "allow" | "deny";
+  policy_reason: string;
+  exit_code?: number;
+  started_at: string;
+  ended_at?: string;
+  has_recording?: boolean;
+  recording_duration_ms?: number;
+  recording_width?: number;
+  recording_height?: number;
+  recording_path?: string;
+    running?: boolean;
+    live_output?: string;
+};
+
+export type AuditRecording = {
+  log: AuditLog;
+  lines: unknown[];
+};
+
+export type ManualReview = {
+  id: string;
+  organization_id: string;
+  session_id?: string;
+  target_id: string;
+  target_name: string;
+  target_alias: string;
+  user_id: string;
+  user_email: string;
+  user_display_name: string;
+  command: string;
+  reason: string;
+  created_at: string;
+  expires_at: string;
+  default_allow: boolean;
+  auto_allow_minutes?: number;
+  auto_allow_expires_at?: string;
+  auto_allow_target_ids?: string[];
+};
+
+export type AdminUser = User;
+
+export type AdminOrg = Organization & {
+  member_count?: number;
+};
+
+export type Providers = {
+  dingtalk?: { enabled: boolean };
+  registration_enabled?: boolean;
+  branding?: {
+    app_name: string;
+    app_description: string;
+    app_icon?: string;
+  };
+};
+
+export type ConsoleData = {
+  user: User;
+  orgs: Organization[];
+  activeOrg: Organization;
+  setActiveOrgID: (id: string) => void;
+  runtime: Runtime;
+  keys: PublicKey[];
+  members: Member[];
+  groups: UserGroup[];
+  targets: Target[];
+  credentials: SSHCredential[];
+  targetFolders: TargetFolder[];
+  userSettings: UserSettings;
+  policies: Policy[];
+  llms: LLMConfig[];
+  prompts: PromptResource[];
+  auditPage: { logs: AuditLog[]; total: number; page: number; page_size: number };
+  refetchAll: () => void;
+};
+
+export type FileEntry = {
+  name: string;
+  path: string;
+  type: "file" | "dir" | "symlink";
+  size: number;
+  mode: string;
+  modified_at?: string;
+};
+
+export type FileProperties = FileEntry & {
+  disk_usage: number;
+  items: number;
+};
+
+export type FileReadResult = {
+  path: string;
+  content: string;
+  modified_at?: string;
+};
+
+export type HTTPForwardLocation = {id: string; name: string; match: "prefix" | "=" | "^~" | "~" | "~*"; path: string; exit_target_id: string; scheme: "http" | "https"; host: string; port: number; strip_prefix: boolean; preserve_host: boolean; headers?: Record<string,string>};
+export type HTTPForwardServer = {id: string; name: string; hosts: string[]; locations: HTTPForwardLocation[]};
+export type HTTPForwardListener = {host: string; port: number};
+export type HTTPForwardConfig = {listeners: HTTPForwardListener[]; servers: HTTPForwardServer[]};
+export type TunnelConfig = {
+ protocol?: "port" | "http"; transports?: ("tcp" | "udp")[]; http?: HTTPForwardConfig;
+ name: string; entry_target_id: string; listen_host: string; listen_port: number;
+ exit_target_id: string; destination_host: string; destination_port: number; duration_seconds: number;
+};
+export type Tunnel = TunnelConfig & {
+ id: string; organization_id: string; enabled: boolean; expires_at?: string;
+ created_by?: string; creator_name?: string; source?: string; temporary?: boolean; forward_type?: "local" | "remote"; remote_address?: string; public_key_fingerprint?: string;
+ status: "running" | "starting" | "error" | "stopped" | "expired" | "unknown";
+ error?: string; error_diagnostic?: {code: string; stage: string; machine: string; address: string}; listen_address?: string; connections: number;
+ transport: "relay" | "negotiating" | "direct" | "mixed"; direct_connections: number; traffic: TunnelTraffic; paths?: TunnelConnectionPath[];
+};
+export type TunnelTraffic = {bucket_start: number; relay_up: number; relay_down: number; direct_up: number; direct_down: number; connections_opened: number; peak_connections: number};
+export type TunnelSourceTraffic = TunnelTraffic & {source_ip: string; active_connections: number};
+export type TunnelTrafficStatistics = {interval_seconds: number; buckets: TunnelTraffic[]; sources: TunnelSourceTraffic[]; active_connections: number};
+export type TunnelCandidate = {address: string; port: number; protocol: string; type: string; network: string; interface?: string; local_address?: string; local_port?: number};
+export type TunnelPeerInfo = {active: boolean; state: string; local?: TunnelCandidate; remote?: TunnelCandidate; rtt_ms?: number; updated_at: string};
+export type TunnelConnectionPath = {id: string; entry_agent_id: string; exit_agent_id: string; entry?: TunnelPeerInfo; exit?: TunnelPeerInfo; updated_at: string};

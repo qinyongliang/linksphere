@@ -1,0 +1,112 @@
+import { useQuery } from "@tanstack/react-query";
+import { lazy, Suspense, useEffect, type ReactNode } from "react";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { ApiError, api } from "./api";
+import { ManualReviewPoller } from "./components/ManualReviewPoller";
+import { Fatal, Loading } from "./components/ui";
+import { useConsoleData } from "./hooks/useConsoleData";
+import { Shell } from "./layout/Shell";
+import { useI18n } from "./i18n";
+import { pageTitle } from "./lib/forms";
+import { documentTitle, updateFavicon } from "./lib/branding";
+import { AuditPage } from "./pages/AuditPage";
+import { AuthPage } from "./pages/AuthPage";
+import { DashboardPage } from "./pages/DashboardPage";
+import { KeysPage } from "./pages/KeysPage";
+import { LocalTerminalPage } from "./pages/LocalTerminalPage";
+import { MembersPage } from "./pages/MembersPage";
+import { OrganizationsPage } from "./pages/OrganizationsPage";
+import { PoliciesPage } from "./pages/PoliciesPage";
+import { SystemAdminPage } from "./pages/SystemAdminPage";
+import { TunnelsPage } from "./pages/TunnelsPage";
+import { TargetsPage } from "./pages/TargetsPage";
+import type { ConsoleData, Organization, Runtime, User } from "./types";
+
+const ConnectPage = lazy(() => import("./pages/ConnectPage").then((module) => ({ default: module.ConnectPage })));
+
+export function App() {
+  const providers = useQuery({ queryKey: ["providers"], queryFn: api.authProviders });
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+
+  if (me.isLoading || providers.isLoading) return <Loading />;
+  if (me.error instanceof ApiError && me.error.status === 401) {
+    return <AuthPage dingTalkEnabled={Boolean(providers.data?.dingtalk?.enabled)} registrationEnabled={Boolean(providers.data?.registration_enabled)} branding={providers.data?.branding} />;
+  }
+  if (me.error) return <Fatal error={me.error} />;
+  if (!me.data) return <Loading />;
+  return <ConsoleApp user={me.data.user} orgs={me.data.organizations} runtime={me.data.runtime} />;
+}
+
+function ConsoleApp({ user, orgs, runtime }: { user: User; orgs: Organization[]; runtime: Runtime }) {
+  const data = useConsoleData({ user, orgs, runtime });
+  const location = useLocation();
+  if (!data) return <Fatal error={new Error("No organization available")} />;
+
+  const isConnectPage = /^\/connect\/?$/.test(location.pathname) || /^\/targets\/[^/]+\/connect\/?$/.test(location.pathname);
+  const isClientTerminalPage = runtime.client_mode && location.pathname === "/local-terminal";
+  const isClientMode = Boolean(data.runtime.client_mode);
+
+  useEffect(() => {
+    updateFavicon(data.runtime);
+    if (isConnectPage) return;
+    document.title = documentTitle("", data.runtime);
+  }, [data.runtime, isConnectPage]);
+
+  return (
+    <>
+      {!isConnectPage && !isClientTerminalPage && <ManualReviewPoller data={data} />}
+      <Routes>
+        <Route path="/connect" element={<Suspense fallback={<Loading />}><ConnectPage data={data} /></Suspense>} />
+        <Route path="/targets/:targetID/connect" element={<Suspense fallback={<Loading />}><ConnectPage data={data} /></Suspense>} />
+        {isClientMode && <Route path="/local-terminal" element={<LocalTerminalPage data={data} />} />}
+        <Route path="*" element={isClientMode ? (
+          <ClientDesktopFrame>
+            <ClientRoutes data={data} />
+          </ClientDesktopFrame>
+        ) : (
+          <Shell data={data}>
+            <ManagedRoutes data={data} />
+          </Shell>
+        )} />
+      </Routes>
+    </>
+  );
+}
+
+function ClientDesktopFrame({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
+  return <main className="client-desktop-content"><h1 className="client-page-title">{pageTitle(t)}</h1>{children}</main>;
+}
+
+function ClientRoutes({ data }: { data: ConsoleData }) {
+  return (
+    <Routes>
+      <Route path="/" element={<Navigate to="/local-terminal" replace />} />
+      <Route path="/local-terminal" element={<LocalTerminalPage data={data} />} />
+      <Route path="/targets" element={<TargetsPage data={data} />} />
+      <Route path="/tunnels" element={<TunnelsPage data={data} />} />
+      <Route path="/agents" element={<Navigate to="/targets" replace />} />
+      <Route path="/policies" element={<PoliciesPage data={data} />} />
+      <Route path="/keys" element={<KeysPage data={data} />} />
+      <Route path="/audit" element={<AuditPage data={data} />} />
+      <Route path="*" element={<Navigate to="/targets" replace />} />
+    </Routes>
+  );
+}
+
+function ManagedRoutes({ data }: { data: ConsoleData }) {
+  return (
+    <Routes>
+      <Route path="/" element={<DashboardPage data={data} />} />
+      <Route path="/orgs" element={<OrganizationsPage data={data} />} />
+      <Route path="/org-admin" element={<MembersPage data={data} />} />
+      <Route path="/keys" element={<KeysPage data={data} />} />
+      <Route path="/targets" element={<TargetsPage data={data} />} />
+      <Route path="/tunnels" element={<TunnelsPage data={data} />} />
+      <Route path="/agents" element={<Navigate to="/targets" replace />} />
+      <Route path="/policies" element={<PoliciesPage data={data} />} />
+      <Route path="/audit" element={<AuditPage data={data} />} />
+      <Route path="/system-admin" element={data.user.is_system_admin ? <SystemAdminPage data={data} /> : <Navigate to="/" replace />} />
+    </Routes>
+  );
+}
