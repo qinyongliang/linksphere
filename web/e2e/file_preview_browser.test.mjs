@@ -60,7 +60,7 @@ try {
     await page.getByLabel(locale === "en" ? "Email" : "邮箱", { exact: true }).fill("admin");
     await page.getByLabel(locale === "en" ? "Password" : "密码", { exact: true }).fill("admin-pass");
     await page.getByRole("button", { name: locale === "en" ? "Sign in" : "登录", exact: true }).click();
-    await page.getByRole("link", { name: locale === "en" ? "SSH services" : "SSH 服务", exact: true }).waitFor();
+    await page.getByRole("link", { name: locale === "en" ? "Services" : "服务", exact: true }).waitFor();
     const target = await page.evaluate(async locale => {
       const me = await fetch("/api/me").then(response => response.json());
       const response = await fetch("/api/targets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ owner_type: "organization", owner_id: me.organizations[0].id, name: "Preview test", alias: `preview-${locale}`, target_type: "direct", host: "127.0.0.1", port: 1, remote_username: "test", auth_type: "password", secret: "test" }) });

@@ -18,7 +18,7 @@ try {
   await page.getByLabel("Password").fill("admin-pass");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("button", { name: "Open menu", exact: true }).click();
-  await page.getByRole("link", { name: /SSH services/ }).click();
+  await page.getByRole("link", { name: /Services/ }).click();
   await page.locator(".sidebar-open").waitFor({ state: "detached" });
   const target = await page.evaluate(async () => {
     const me = await fetch("/api/me").then((response) => response.json());
@@ -30,9 +30,9 @@ try {
     return (await response.json()).target;
   });
   await page.getByRole("button", { name: "Open menu", exact: true }).click();
-  await page.getByRole("link", { name: /Dashboard/ }).click();
+  await page.getByRole("link", { name: /Overview/ }).click();
   await page.getByRole("button", { name: "Open menu", exact: true }).click();
-  await page.getByRole("link", { name: /SSH services/ }).click();
+  await page.getByRole("link", { name: /Services/ }).click();
   const row = page.locator(".target-tree-row").filter({ hasText: target.alias });
   await row.waitFor();
   for (const width of [390, 768, 1024, 1440, 1800]) {

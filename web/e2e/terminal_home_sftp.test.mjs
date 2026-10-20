@@ -110,7 +110,7 @@ async function login(page) {
   await page.getByLabel("Email", { exact: true }).fill("admin");
   await page.getByLabel("Password", { exact: true }).fill("admin-pass");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await page.getByRole("link", { name: "SSH services", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Services", exact: true }).waitFor();
 }
 async function expectPath(page, expected) {
   await page.waitForFunction((path) => document.querySelector(".terminal-tab-layer.active .files-zone:not(.collapsed) .file-manager-path")?.getAttribute("title") === path, expected);

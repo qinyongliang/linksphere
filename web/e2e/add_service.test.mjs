@@ -29,7 +29,7 @@ try {
   await page.getByLabel("Email").fill("admin");
   await page.getByLabel("Password").fill("admin-pass");
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.getByRole("link", { name: /SSH services/ }).click();
+  await page.getByRole("link", { name: /Services/ }).click();
   for (const reducedMotion of ["reduce", "no-preference", "reduce"]) {
     await page.emulateMedia({ reducedMotion });
     for (const width of [1440, 900, 390]) {
@@ -40,6 +40,7 @@ try {
         const dialog = document.querySelector('[role="dialog"]');
         return dialog && getComputedStyle(dialog).opacity === "1";
       }, null, { timeout: 2500 });
+      await page.getByRole("tab", { name: "Direct connection", exact: true }).click();
       await page.getByLabel("Service name", { exact: true }).fill("Dialog regression");
       await page.getByLabel("Target alias", { exact: true }).fill("dialog-regression");
       await page.getByRole("button", { name: "Next", exact: true }).click();
@@ -49,7 +50,8 @@ try {
     }
   }
   await page.getByRole("button", { name: "Add service", exact: true }).click();
-  await page.getByLabel("Service name", { exact: true }).fill("Dialog regression");
+  await page.getByRole("tab", { name: "Direct connection", exact: true }).click();
+      await page.getByLabel("Service name", { exact: true }).fill("Dialog regression");
   await page.getByLabel("Target alias", { exact: true }).fill("dialog-regression");
   await page.getByRole("button", { name: "Next", exact: true }).click();
   await page.getByLabel("Target host", { exact: true }).fill("127.0.0.1");

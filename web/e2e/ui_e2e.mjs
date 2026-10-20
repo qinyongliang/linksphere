@@ -218,7 +218,7 @@ try {
   await expectText(page, /Access path|访问链路/);
   await expectText(page, /Target service|目标服务/);
 
-  await page.getByRole("link", { name: /Public keys/ }).click();
+  await page.getByRole("link", { name: /AI & credentials/ }).click();
   await page.getByRole("button", { name: "Add public key" }).click();
   await page.getByLabel("Title").fill("React laptop");
   await page.getByRole("textbox", { name: "Public key" }).fill("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDUTThKwa4NlLwH7sntZnYosUoFkNceEce0kEwbE9nNm react-key");
@@ -232,8 +232,9 @@ try {
   await page.getByRole("button", { name: "Create organization" }).last().click();
   await page.locator("tbody").getByText("React Ops").waitFor();
 
-  await page.getByRole("link", { name: /SSH services/ }).click();
+  await page.getByRole("link", { name: /Services/ }).click();
   await page.getByRole("button", { name: "Add service" }).click();
+  await page.getByRole("tab", { name: "Direct connection", exact: true }).click();
   await page.getByLabel("Service name").fill("React Service");
   await page.getByLabel("Target alias").fill("react-test2");
   await page.getByLabel("Tags").fill("test, common");
@@ -251,7 +252,7 @@ try {
   await expectText(page, "Copied");
 
   await page.getByRole("button", { name: "Add service" }).click();
-  await page.getByRole("tab", { name: /Private node|私有节点/ }).click();
+  await page.getByRole("tab", { name: /Node|节点/ }).click();
   await page.getByLabel("Target alias").fill("react-private");
   await page.getByRole("button", { name: "Create install token" }).click();
   await expectText(page, "systemctl");
@@ -259,7 +260,7 @@ try {
   await page.getByRole("button", { name: "Close" }).click();
 
   const externalAlias = `refresh-${Date.now()}`;
-  await page.getByRole("link", { name: /^Audit$/ }).click();
+  await page.getByRole("link", { name: /^Activity$/ }).click();
   const externalTargetID = await page.evaluate(async (alias) => {
     const me = await fetch("/api/me").then((response) => response.json());
     const ownerID = localStorage.getItem("gosshd_active_org") || me.organizations[0].id;
@@ -283,7 +284,7 @@ try {
     if (!response.ok) throw new Error(await response.text());
     return (await response.json()).target.id;
   }, externalAlias);
-  await page.getByRole("link", { name: /SSH services/ }).click();
+  await page.getByRole("link", { name: /Services/ }).click();
   await expectText(page, externalAlias);
 
   const privateAlias = `private-edit-${Date.now()}`;
@@ -310,8 +311,8 @@ try {
     if (!response.ok) throw new Error(await response.text());
     return (await response.json()).target.id;
   }, privateAlias);
-  await page.getByRole("link", { name: /^Audit$/ }).click();
-  await page.getByRole("link", { name: /SSH services/ }).click();
+  await page.getByRole("link", { name: /^Activity$/ }).click();
+  await page.getByRole("link", { name: /Services/ }).click();
   await expectText(page, privateAlias);
   const privateRow = page.locator("tr").filter({ hasText: privateAlias }).first();
   await privateRow.getByText("root@127.0.0.1:22").waitFor();
@@ -329,7 +330,7 @@ try {
   await page.getByRole("button", { name: "Close" }).last().click();
   await page.getByRole("button", { name: "Close" }).first().click();
 
-  await page.getByRole("link", { name: /Command policy/ }).click();
+  await page.getByRole("link", { name: /Access policies/ }).click();
   await page.getByRole("button", { name: "Create safety group" }).click();
   const policyDialog = page.getByRole("dialog", { name: "Create safety group" });
   await policyDialog.getByLabel("Name").fill("React readonly");
@@ -338,7 +339,7 @@ try {
   await policyDialog.getByRole("button", { name: "Create", exact: true }).click();
   await expectText(page, "React readonly");
 
-  await page.getByRole("link", { name: /^Audit$/ }).click();
+  await page.getByRole("link", { name: /^Activity$/ }).click();
   await expectText(page, /No audit records|暂无审计记录/);
   await expectStaticEmptyState(page);
 

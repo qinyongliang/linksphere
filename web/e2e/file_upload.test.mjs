@@ -83,7 +83,7 @@ try {
     await page.getByLabel(zh ? "邮箱" : "Email", { exact: true }).fill("admin");
     await page.getByLabel(zh ? "密码" : "Password", { exact: true }).fill("admin-pass");
     await page.getByRole("button", { name: zh ? "登录" : "Sign in", exact: true }).click();
-    await page.getByRole("link", { name: zh ? "SSH 服务" : "SSH services", exact: true }).waitFor();
+    await page.getByRole("link", { name: zh ? "服务" : "Services", exact: true }).waitFor();
     await page.goto(`${base}/targets/${target}/connect`);
     await page.locator(".files-zone").waitFor();
     if (await page.locator(".files-zone .collapsed-zone-button").count()) await page.locator(".files-zone .collapsed-zone-button").click();

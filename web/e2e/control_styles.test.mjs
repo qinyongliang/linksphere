@@ -54,7 +54,7 @@ try {
     if (!response.ok) throw new Error(await response.text());
     return (await response.json()).target;
   });
-  await page.getByRole("link", { name: "SSH 服务", exact: true }).click();
+  await page.getByRole("link", { name: "服务", exact: true }).click();
   const row = page.locator(".target-tree-row").filter({ hasText: target.alias });
   await row.getByRole("button", { name: "更多", exact: true }).click();
   await page.getByRole("menu").getByRole("button", { name: "编辑", exact: true }).click();

@@ -21,7 +21,7 @@ try {
   await page.getByLabel("Email").fill("admin");
   await page.getByLabel("Password").fill("admin-pass");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await page.getByRole("link", { name: "Audit", exact: true }).click();
+  await page.getByRole("link", { name: "Activity", exact: true }).click();
   await page.getByText("No audit records yet", { exact: false }).count();
   phase = "running";
   const row = page.locator(".audit-page tbody tr").filter({ hasText: record.command });

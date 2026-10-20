@@ -38,7 +38,7 @@ try {
   await page.goto(base); await page.getByLabel(zh ? "邮箱" : "Email", { exact: true }).fill("admin"); await page.getByLabel(zh ? "密码" : "Password", { exact: true }).fill("admin-pass");
   await page.getByRole("button", { name: zh ? "登录" : "Sign in", exact: true }).click();
   if (width < 600) await page.locator(".mobile-menu-button").click();
-  await page.getByRole("link", { name: zh ? "隧道管理" : "Tunnels", exact: true }).click();
+  await page.getByRole("link", { name: zh ? "连接转发" : "Connections", exact: true }).click();
   await page.getByRole("tab", { name: zh ? "端口转发" : "Port forwarding", exact: true }).waitFor();
   await page.getByRole("button", { name: zh ? "新建隧道" : "New tunnel", exact: true }).first().click();
   const editor = page.locator(".tunnel-editor"); await editor.waitFor();

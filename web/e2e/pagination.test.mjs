@@ -28,7 +28,7 @@ try {
   await page.getByLabel("邮箱").fill("admin");
   await page.getByLabel("密码").fill("admin-pass");
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await page.getByRole("link", { name: "审计", exact: true }).click();
+  await page.getByRole("link", { name: "操作记录", exact: true }).click();
   const auditPager = page.locator(".audit-page .app-pagination");
   await page.locator("td[data-column=command]").first().getByText("echo audit-1", { exact: true }).waitFor();
   assert.equal(await auditPager.getByRole("button", { name: "下一步", exact: true }).count(), 0);
@@ -46,7 +46,7 @@ try {
     if (!response.ok) throw new Error("Could not create fixture target");
     return (await response.json()).target;
   });
-  await page.getByRole("link", { name: "SSH 服务", exact: true }).click();
+  await page.getByRole("link", { name: "服务", exact: true }).click();
   const row = page.locator(".target-tree-row").filter({ hasText: target.alias });
   await row.waitFor();
   await page.locator(".resource-actions").getByRole("button", { name: "更多", exact: true }).click();

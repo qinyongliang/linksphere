@@ -37,7 +37,7 @@ try {
     await page.getByLabel(zh ? "邮箱" : "Email", { exact: true }).fill("admin");
     await page.getByLabel(zh ? "密码" : "Password", { exact: true }).fill("admin-pass");
     await page.getByRole("button", { name: zh ? "登录" : "Sign in", exact: true }).click();
-    await page.getByRole("link", { name: zh ? "隧道管理" : "Tunnels", exact: true }).click();
+    await page.getByRole("link", { name: zh ? "连接转发" : "Connections", exact: true }).click();
     const up = zh ? "发往目标 (入口 → 目标服务)" : "To destination (Entry → Destination service)";
     const down = zh ? "目标返回 (目标服务 → 入口)" : "From destination (Destination service → Entry)";
     const cards = page.locator(".tunnel-card");

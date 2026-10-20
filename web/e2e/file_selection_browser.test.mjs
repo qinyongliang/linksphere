@@ -48,7 +48,7 @@ try {
   await page.getByLabel("Email", { exact: true }).fill("admin");
   await page.getByLabel("Password", { exact: true }).fill("admin-pass");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await page.getByRole("link", { name: "SSH services", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Services", exact: true }).waitFor();
   const target = await page.evaluate(async () => {
     const me = await fetch("/api/me").then((r) => r.json());
     const response = await fetch("/api/targets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ owner_type: "organization", owner_id: me.organizations[0].id, name: "Selection test", alias: "selection", target_type: "direct", host: "127.0.0.1", port: 1, remote_username: "root", auth_type: "password", secret: "test" }) });

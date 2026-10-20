@@ -27,7 +27,7 @@ try {
   await page.getByLabel("Email").fill("admin");
   await page.getByLabel("Password").fill("admin-pass");
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.getByRole("link", { name: /SSH services/ }).waitFor();
+  await page.getByRole("link", { name: /Services/ }).waitFor();
 
   const target = await page.evaluate(async () => {
     const me = await fetch("/api/me").then((response) => response.json());

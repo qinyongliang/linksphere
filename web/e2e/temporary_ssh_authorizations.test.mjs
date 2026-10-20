@@ -43,7 +43,7 @@ try {
     return (await response.json()).target;
   });
   if (mobile) await page.getByRole("button", { name: "Open menu", exact: true }).click();
-  await page.getByRole("link", { name: /SSH services/ }).click();
+  await page.getByRole("link", { name: /Services/ }).click();
   const row = page.locator(".target-tree-row").filter({ hasText: target.alias });
   await row.waitFor();
   const more = row.getByRole("button", { name: "More", exact: true });

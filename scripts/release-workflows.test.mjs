@@ -26,3 +26,11 @@ test('Manual desktop packages use the requested version',async()=>{
 test('Pages deploys using a preconfigured workflow site',async()=>{
  const source=await read('.github/workflows/pages.yml');assert.ok(source.includes('actions/configure-pages@'));assert.ok(!source.includes('enablement: true'));assert.ok(source.includes('actions/deploy-pages@'));
 });
+
+test('Manual repair builds publish to the requested semantic version, not the branch name',async()=>{
+ const source=await read('.github/workflows/release.yml');
+ assert.ok(source.includes('Publish validated packages to the requested release'));
+ assert.ok(source.includes('RELEASE_VERSION: ${{ inputs.version || github.ref_name }}'));
+ assert.ok(source.includes('tag_name: ${{ inputs.version || github.event.release.tag_name || github.ref_name }}'));
+ assert.ok(source.includes('Published versions require a semantic version tag'));
+});
