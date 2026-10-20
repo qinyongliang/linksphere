@@ -6,6 +6,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Version -notmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$') { throw 'Invalid version label' }
+$workspaceRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 
 function Require-Command {
   param([string]$Name, [string]$Message)
@@ -39,7 +41,9 @@ if (-not $SkipWebBuild) {
   & $pnpm run build
 }
 
-$packageRoot = Join-Path 'package' "gosshd-client-$Runtime"
+$packageBase = Join-Path $workspaceRoot 'package'
+$packageRoot = [IO.Path]::GetFullPath((Join-Path $packageBase "gosshd-client-$Runtime"))
+if (-not $packageRoot.StartsWith($packageBase + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Package directory is outside the workspace package root' }
 Remove-Item -Recurse -Force $packageRoot -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
@@ -51,7 +55,8 @@ $wailsPlatform = switch ($Runtime) {
 
 Push-Location client/wails
 try {
-  & $wailsPath build -platform $wailsPlatform -o GOSSHD.exe
+  & $wailsPath build -platform $wailsPlatform -trimpath -o GOSSHD.exe
+  if ($LASTEXITCODE -ne 0) { throw 'Wails client build failed' }
 } finally {
   Pop-Location
 }

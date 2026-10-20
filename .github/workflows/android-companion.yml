@@ -31,6 +31,25 @@ permissions:
   contents: read
 
 jobs:
+  signing-config:
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - id: check
+        name: Check whether signed Android publishing is configured
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.ANDROID_DESKTOP_KEYSTORE_B64 }}
+          SIGNING_PASSWORD: ${{ secrets.ANDROID_DESKTOP_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$SIGNING_KEY" ] && [ -n "$SIGNING_PASSWORD" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Formal Android APK publishing is not configured. Development builds remain available; no signing identity is replaced."
+          fi
+
   installers:
     strategy:
       matrix:
@@ -45,7 +64,8 @@ jobs:
         run: node --test scripts/android-desktop/adb-install.test.mjs
 
   build:
-    needs: installers
+    needs: [installers, signing-config]
+    if: ${{ !startsWith(github.ref, 'refs/tags/') || needs.signing-config.outputs.available == 'true' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

@@ -24,6 +24,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version label for manually built packages
+        required: false
+        default: development
 
 permissions:
   contents: read
@@ -105,9 +110,11 @@ jobs:
         run: go test ./internal/desktop -run '^TestMacBackgroundNative' -count=1 -timeout=2m
       - name: Package desktop module
         shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          version="${GITHUB_REF_NAME}"
-          if [[ "$version" != v* ]]; then version="development"; fi
+          version="$GITHUB_REF_NAME"
+          if [ "$GITHUB_REF_TYPE" != tag ]; then version="${REQUESTED_VERSION:-development}"; fi
           mkdir -p dist
           archive="gosshd-desktop-$version-${{ matrix.goos }}-${{ matrix.arch }}.zip"
           if [ "${{ matrix.goos }}" = windows ]; then
@@ -139,12 +146,14 @@ jobs:
           log-accepted-android-sdk-licenses: false
       - name: Build independent Android MCP hosts
         shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           sdkmanager "ndk;27.2.12479018"
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
           version="$GITHUB_REF_NAME"
-          if [[ "$version" != v* ]]; then version="development"; fi
+          if [ "$GITHUB_REF_TYPE" != tag ]; then version="${REQUESTED_VERSION:-development}"; fi
           bash scripts/build-desktop-android.sh "$version"
           mkdir -p dist
           for arch in armv7 arm64; do

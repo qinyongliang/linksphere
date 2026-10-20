@@ -1,0 +1,94 @@
+name: Windows client installer
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (for example v0.1.0)
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate version and public source
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:REQUESTED_VERSION }
+          if ($version -notmatch '^v?\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') { throw 'Expected a semantic release version' }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+          $numeric = [regex]::Match($version, '\d+\.\d+\.\d+').Value
+          "APP_VERSION=$numeric" >> $env:GITHUB_ENV
+          node scripts/check-public-content.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Public-content check failed' }
+      - name: Build web application
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.0.7 --activate
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+          pnpm run build
+          if ($LASTEXITCODE -ne 0) { throw 'Web build failed' }
+      - name: Build desktop client
+        shell: pwsh
+        run: ./build-client-windows.ps1 -Version $env:RELEASE_VERSION -Runtime win-x64 -SkipWebBuild
+      - name: Prepare Inno Setup
+        shell: pwsh
+        run: |
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $compiler)) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' }
+          }
+          if (-not (Test-Path -LiteralPath $compiler)) { throw 'Inno Setup compiler was not found' }
+          "INNO_COMPILER=$compiler" >> $env:GITHUB_ENV
+      - name: Create installer and portable package
+        shell: pwsh
+        run: |
+          & $env:INNO_COMPILER "/DAppVersion=$env:APP_VERSION" "/DReleaseVersion=$env:RELEASE_VERSION" client/wails/installer/windows.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+          Copy-Item -LiteralPath "package/gosshd-client-win-x64-$env:RELEASE_VERSION.zip" -Destination "dist/LinkSphere-$env:RELEASE_VERSION-windows-amd64-portable.zip"
+          foreach ($file in Get-ChildItem dist -File) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText($file.FullName + '.sha256', $hash + '  ' + $file.Name + [char]10, [Text.Encoding]::ASCII)
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-client-installer
+          path: |
+            dist/LinkSphere-Setup-*.exe
+            dist/LinkSphere-Setup-*.exe.sha256
+            dist/LinkSphere-*-portable.zip
+            dist/LinkSphere-*-portable.zip.sha256
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-client-installer
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
