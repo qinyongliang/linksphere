@@ -33,6 +33,19 @@ LinkSphere 提供设备工具，由接入的 AI 助手规划和执行任务。�
 
 可用能力取决于设备、已安装组件和系统权限。详细要求见[桌面控制](docs/desktop-mcp.md)与 [Android 接入](docs/android-accessibility.md)。
 
+## 下载安装包
+
+首个版本为 **v0.1.0**。安装前请核对发布页中的 SHA256 校验文件。
+
+| 使用方式 | 下载 |
+| --- | --- |
+| Windows 桌面客户端 | [安装器](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/LinkSphere-Setup-v0.1.0-windows-amd64.exe) · [免安装 ZIP](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/LinkSphere-v0.1.0-windows-amd64-portable.zip) |
+| Linux 服务端 | [x64](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/gosshd-v0.1.0-linux-amd64.tar.gz) · [ARM64](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/gosshd-v0.1.0-linux-arm64.tar.gz) |
+| macOS 服务端 | [Apple Silicon](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/gosshd-v0.1.0-darwin-arm64.tar.gz) · [Intel](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/gosshd-v0.1.0-darwin-amd64.tar.gz) |
+| Windows 服务端 | [x64 ZIP](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/gosshd-v0.1.0-windows-amd64.zip) |
+
+Windows 安装器尚未进行 Authenticode 签名，macOS 包未公证。桌面 MCP、Agent 及其校验文件见[完整发布页](https://github.com/qinyongliang/linksphere/releases/tag/v0.1.0)。Android 正式 APK 需要单独配置维护中的签名密钥，不会用开发签名替代正式签名。
+
 ## 本地运行
 
 准备 Go 1.26+、Node.js 24，以及 `package.json` 指定版本的 pnpm。

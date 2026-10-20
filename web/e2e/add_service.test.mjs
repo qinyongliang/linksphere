@@ -51,7 +51,7 @@ try {
   }
   await page.getByRole("button", { name: "Add service", exact: true }).click();
   await page.getByRole("tab", { name: "Direct connection", exact: true }).click();
-      await page.getByLabel("Service name", { exact: true }).fill("Dialog regression");
+  await page.getByLabel("Service name", { exact: true }).fill("Dialog regression");
   await page.getByLabel("Target alias", { exact: true }).fill("dialog-regression");
   await page.getByRole("button", { name: "Next", exact: true }).click();
   await page.getByLabel("Target host", { exact: true }).fill("127.0.0.1");

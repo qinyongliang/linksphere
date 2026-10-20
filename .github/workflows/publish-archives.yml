@@ -1,0 +1,51 @@
+name: Publish validated release archives
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release version
+        required: true
+        default: v0.1.0
+      artifact_run:
+        description: Workflow run containing validated release archives
+        required: true
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require successful validation and package build steps
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN: ${{ inputs.artifact_run }}
+        run: |
+          [[ "$ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1
+          repository="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN" --jq '.head_repository.full_name')"
+          [ "$repository" = "$GITHUB_REPOSITORY" ] || exit 1
+          for step in 'Verify control styles and tunnel traffic in browser' 'Build binaries and packages'; do
+            status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN/jobs" --jq ".jobs[].steps[] | select(.name == \"$step\") | .conclusion")"
+            [ "$status" = success ] || { echo "Required build step did not pass: $step" >&2; exit 1; }
+          done
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.artifact_run }}
+          name: gosshd-release-archives
+          path: dist
+      - name: Verify checksums and upload package attachments
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.version }}
+        run: bash scripts/upload-release-assets.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify public package downloads
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.version }}
+        run: node scripts/verify-release.mjs

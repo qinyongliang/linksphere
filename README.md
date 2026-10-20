@@ -33,6 +33,19 @@ LinkSphere provides tools; the connected assistant plans and executes tasks. The
 
 Capabilities depend on the device, installed components and OS permissions. See [desktop control](docs/desktop-mcp.md) and [Android setup](docs/android-accessibility.md).
 
+## Download packages
+
+The first release is **v0.1.0**. Verify the published SHA256 checksums before installing.
+
+| Use | Download |
+| --- | --- |
+| Windows desktop client | [Installer](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/LinkSphere-Setup-v0.1.0-windows-amd64.exe) · [Portable ZIP](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/LinkSphere-v0.1.0-windows-amd64-portable.zip) |
+| Linux server | [x64](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/gosshd-v0.1.0-linux-amd64.tar.gz) · [ARM64](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/gosshd-v0.1.0-linux-arm64.tar.gz) |
+| macOS server | [Apple Silicon](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/gosshd-v0.1.0-darwin-arm64.tar.gz) · [Intel](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/gosshd-v0.1.0-darwin-amd64.tar.gz) |
+| Windows server | [x64 ZIP](https://github.com/qinyongliang/linksphere/releases/download/v0.1.0/gosshd-v0.1.0-windows-amd64.zip) |
+
+Windows installers are not Authenticode-signed and macOS packages are not notarized. Desktop MCP packages, Agents and checksums are on the [full release page](https://github.com/qinyongliang/linksphere/releases/tag/v0.1.0). Formal Android APKs require the maintained signing configuration; development signatures are not substituted.
+
 ## Run locally
 
 Requirements: Go 1.26+, Node.js 24 and the pnpm version declared in `package.json`.
