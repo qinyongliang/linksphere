@@ -27,7 +27,7 @@ for(const asset of assets.values()){
 }
 let verified=0;
 for(const asset of assets.values()){
- if(!/\.(?:exe|zip|tar\.gz|apk)$/.test(asset.name))continue;
+ if(!/\.(?:exe|zip|tar\.gz|apk)$/.test(asset.name)&&!asset.name.startsWith(`gosshd-agent-${tag}-`))continue;
  const checksum=expected.get(asset.name);
  if(!checksum)throw new Error('Package has no published SHA256: '+asset.name);
  const response=await fetch(asset.browser_download_url,{signal:AbortSignal.timeout(180000)});
