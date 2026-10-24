@@ -14,8 +14,8 @@ var version = "dev"
 func parseAgentFlags(flags *flag.FlagSet, args []string) (agent.Config, error) {
 	var cfg agent.Config
 	cfg.Version = version
-	flags.StringVar(&cfg.Server, "server", "", "public gosshd server URL (required)")
-	flags.StringVar(&cfg.EnrollmentToken, "enrollment-token", "", "owner-scoped bastion enrollment token")
+	flags.StringVar(&cfg.Server, "server", "", "public LinkSphere server URL (required)")
+	flags.StringVar(&cfg.EnrollmentToken, "enrollment-token", "", "owner-scoped LinkSphere enrollment token")
 	flags.StringVar(&cfg.IDFile, "id-file", "", "path to stable local agent id file")
 	flags.StringVar(&cfg.Shell, "shell", "", "shell executable; defaults to parent process shell, SHELL, or login shell")
 	flags.StringVar(&cfg.Root, "root", "", "working directory; defaults to the current user's home directory")

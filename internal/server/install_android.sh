@@ -159,11 +159,11 @@ running() {
 }
 case "${1:-start}" in
   start)
-    if running; then echo "gosshd-agent already running (pid=$pid)"; exit 0; fi
+    if running; then echo "LinkSphere Agent already running (pid=$pid)"; exit 0; fi
     nohup "$dir/run.sh" </dev/null >>"$dir/agent.log" 2>&1 &
     printf '%s\n' "$!" > "$dir/agent.pid"
     sleep 1
-    running || { echo "gosshd-agent failed to start; check $dir/agent.log" >&2; exit 1; }
+    running || { echo "LinkSphere Agent failed to start; check $dir/agent.log" >&2; exit 1; }
     ;;
   stop)
     if running; then
@@ -180,7 +180,7 @@ case "${1:-start}" in
     rm -f "$dir/agent.pid"
     ;;
   restart) "$0" stop; "$0" start ;;
-  status) if running; then echo "gosshd-agent running (pid=$pid)"; else echo 'gosshd-agent stopped'; exit 1; fi ;;
+  status) if running; then echo "LinkSphere Agent running (pid=$pid)"; else echo 'LinkSphere Agent stopped'; exit 1; fi ;;
   *) echo "usage: $0 [start|stop|restart|status]" >&2; exit 1 ;;
 esac
 CONTROL

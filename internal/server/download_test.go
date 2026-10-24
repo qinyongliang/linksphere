@@ -8,8 +8,43 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+// Only explicitly created local test servers may be contacted. Public release
+// fallback URLs are rejected before any DNS lookup or socket connection.
+type offlineReleaseTransport struct {
+	base    http.RoundTripper
+	allowed map[string]bool
+	blocked atomic.Int64
+}
+
+func (g *offlineReleaseTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if !g.allowed[r.URL.Scheme+"://"+r.URL.Host] {
+		g.blocked.Add(1)
+		return nil, fmt.Errorf("external release request blocked by offline test fixture")
+	}
+	return g.base.RoundTrip(r)
+}
+func restrictReleaseHTTPToFixtures(t *testing.T, servers ...*httptest.Server) {
+	t.Helper()
+	old := http.DefaultTransport
+	base := &http.Transport{} // no environment proxy or external resolver for fixture IPs
+	allowed := map[string]bool{}
+	for _, server := range servers {
+		allowed[server.URL] = true
+	}
+	guard := &offlineReleaseTransport{base: base, allowed: allowed}
+	http.DefaultTransport = guard
+	t.Cleanup(func() {
+		http.DefaultTransport = old
+		base.CloseIdleConnections()
+		if n := guard.blocked.Load(); n != 0 {
+			t.Errorf("release test attempted %d non-fixture requests", n)
+		}
+	})
+}
 
 func TestReleaseProxyURLsKeepConfiguredFirstAndDeduplicate(t *testing.T) {
 	app := NewApp(Config{ReleaseProxyURL: " https://custom.example/, https://ghfast.top/ "})
@@ -123,6 +158,7 @@ func TestEnsureAgentBinaryFallsBackToProxyChecksum(t *testing.T) {
 		}
 	}))
 	t.Cleanup(proxy.Close)
+	restrictReleaseHTTPToFixtures(t, direct, proxy)
 
 	cacheRoot := filepath.Join(t.TempDir(), "cache")
 	app := NewApp(Config{
@@ -163,6 +199,7 @@ func TestAgentDownloadSHA256FallsBackToReleaseChecksum(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(proxy.Close)
+	restrictReleaseHTTPToFixtures(t, direct, proxy)
 
 	app := NewApp(Config{
 		Version:         "v1.2.3",
@@ -178,4 +215,13 @@ func TestAgentDownloadSHA256FallsBackToReleaseChecksum(t *testing.T) {
 	if got != agentSHA {
 		t.Fatalf("sha mismatch: got %s want %s", got, agentSHA)
 	}
+}
+
+func TestOfflineReleaseTransportRejectsExternalBeforeDispatch(t *testing.T) {
+	guard := &offlineReleaseTransport{allowed: map[string]bool{}}
+	request := httptest.NewRequest(http.MethodGet, "https://blocked.example/checksums.txt", nil)
+	if _, err := guard.RoundTrip(request); err == nil || guard.blocked.Load() != 1 {
+		t.Fatal("external request not blocked")
+	}
+	// base is nil: any attempt to dispatch would panic, so this proves no transport I/O.
 }

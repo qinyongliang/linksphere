@@ -6,7 +6,9 @@
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const finePointer = matchMedia('(pointer: fine)');
   let frame = 0;
-  const paused = () => reduced.matches || document.hidden;
+  let userPaused = false;
+  const motionButton = document.querySelector('.motion-toggle');
+  const paused = () => userPaused || reduced.matches || document.hidden;
   const clamp = (value,min,max) => Math.max(min,Math.min(max,value));
   const scenes = Array.from(document.querySelectorAll('.scroll-scene')).map(section => ({
     section, art: section.querySelector('[data-parallax]'), progress:.5,
@@ -48,6 +50,12 @@
   function updateMotion() {
     const isPaused=paused();
     root.dataset.motion=isPaused?'paused':'playing';
+    if (motionButton) {
+      motionButton.disabled = reduced.matches;
+      motionButton.setAttribute('aria-pressed', String(!isPaused));
+      motionButton.title = reduced.matches ? motionButton.dataset.reducedLabel : (isPaused ? motionButton.dataset.playLabel : motionButton.dataset.pauseLabel);
+      motionButton.textContent = isPaused ? '▶' : 'Ⅱ';
+    }
     if (isPaused) {
       cancelAnimationFrame(frame);frame=0;
       scenes.forEach(scene=>{
@@ -58,6 +66,7 @@
       });
     } else schedule();
   }
+  if (motionButton) motionButton.addEventListener('click', () => { userPaused = !userPaused; updateMotion(); });
   reduced.addEventListener('change',updateMotion);
   document.addEventListener('visibilitychange',updateMotion);
   window.addEventListener('scroll',()=>{if(paused())updateMotion();else schedule();},{passive:true});

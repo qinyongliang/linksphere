@@ -25,7 +25,7 @@ xcrun swiftc -O -target "$arch-apple-macosx12.3" -framework AppKit -framework Ap
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.gosshd.desktop-helper</string><key>CFBundleName</key><string>GOSSHD Desktop Helper</string><key>CFBundleExecutable</key><string>gosshd-desktop-helper</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string><key>LSMinimumSystemVersion</key><string>12.3</string><key>LSUIElement</key><true/></dict></plist>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.gosshd.desktop-helper</string><key>CFBundleName</key><string>LinkSphere Desktop Helper</string><key>CFBundleExecutable</key><string>gosshd-desktop-helper</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string><key>LSMinimumSystemVersion</key><string>12.3</string><key>LSUIElement</key><true/></dict></plist>
 PLIST
 # Reuse the same certificate and bundle identifier across updates. Missing or
 # unusable configured identities must fail; never fall back to ad-hoc signing.

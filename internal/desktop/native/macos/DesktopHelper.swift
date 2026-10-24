@@ -49,7 +49,7 @@ func interactive() -> Bool {
 }
 func status() -> [String: Any] { ["platform":"darwin","interactive":interactive(),"permissions":["screen_capture":CGPreflightScreenCaptureAccess(),"accessibility":AXIsProcessTrusted()],"capture_backend":"ScreenCaptureKit","protocol_version":2,"background_supported":true,"supported_modes":["default","auto","background"],"background_capture_backend":"ScreenCaptureKit desktopIndependentWindow"] }
 func requireDesktop() throws { if !interactive() { throw DesktopError("no logged-in user desktop; run the helper in a user's graphical session, not a root LaunchDaemon") } }
-func requireAX() throws { if !AXIsProcessTrusted() { throw DesktopError("accessibility permission required: enable GOSSHD Desktop Helper in System Settings > Privacy & Security > Accessibility") } }
+func requireAX() throws { if !AXIsProcessTrusted() { throw DesktopError("accessibility permission required: enable LinkSphere Desktop Helper in System Settings > Privacy & Security > Accessibility") } }
 func attribute(_ e: AXUIElement, _ name: String) -> CFTypeRef? { var result: CFTypeRef?; return AXUIElementCopyAttributeValue(e,name as CFString,&result) == .success ? result : nil }
 func valueString(_ value:CFTypeRef?) -> String { if let text=value as? String {return String(text.prefix(4096))};if let number=value as? NSNumber{return number.stringValue};return "" }
 func stringAttribute(_ e: AXUIElement, _ name: String) -> String { let value = attribute(e,name); return valueString(value) }
@@ -86,7 +86,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
 func displays() -> [[String:Any]] {var ids=[CGDirectDisplayID](repeating:0,count:32);var count:UInt32=0;guard CGGetActiveDisplayList(32,&ids,&count) == .success else{return []};return ids.prefix(Int(count)).map{["id":String($0),"bounds":rectJSON(CGDisplayBounds($0)),"primary":$0==CGMainDisplayID()]} }
 func screenshot(_ info: [String: Any], _ displayID:String="", _ background:Bool=false) throws -> [String: Any] {
  if background && info.isEmpty {throw unsupported(true,"capture requires a specific window; display fallback is forbidden")}
- if !CGPreflightScreenCaptureAccess() { throw DesktopError("screen recording permission required: enable GOSSHD Desktop Helper in System Settings > Privacy & Security > Screen Recording") }
+ if !CGPreflightScreenCaptureAccess() { throw DesktopError("screen recording permission required: enable LinkSphere Desktop Helper in System Settings > Privacy & Security > Screen Recording") }
  let contentReady=DispatchSemaphore(value:0); var content:SCShareableContent?; var contentError:Error?
  SCShareableContent.getExcludingDesktopWindows(false,onScreenWindowsOnly:true) { value,error in content=value;contentError=error;contentReady.signal() }
  if contentReady.wait(timeout:.now()+10) != .success { throw DesktopError("screen content enumeration timed out") }

@@ -3,8 +3,10 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,9 +25,29 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
+// Handshake tests hash inert local bytes; they must not fetch release checksums.
+func offlineAgentHandshakeArtifact(t *testing.T, goos, goarch string) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	name := "gosshd-agent"
+	if goos == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(root, "v1.2.3", goos, agentDownloadArch(goos, goarch), name)
+	body := []byte("inert handshake checksum fixture; not executable")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return root, fmt.Sprintf("%x", sha256.Sum256(body))
+}
+
 func TestAgentWSReturnsVersionAndAgentDownloadURL(t *testing.T) {
 	ctx := context.Background()
-	app := NewApp(Config{Version: "v1.2.3", PublicHost: "relay.example.com", DatabasePath: filepath.Join(t.TempDir(), "gosshd.db")})
+	artifactRoot, expectedSHA := offlineAgentHandshakeArtifact(t, "linux", "amd64")
+	app := NewApp(Config{Version: "v1.2.3", AgentPath: artifactRoot, PublicHost: "relay.example.com", DatabasePath: filepath.Join(t.TempDir(), "gosshd.db")})
 	token := createAgentEnrollmentForTest(t, ctx, app, "relay-agent")
 	mux := http.NewServeMux()
 	app.routes(mux)
@@ -53,6 +75,9 @@ func TestAgentWSReturnsVersionAndAgentDownloadURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if resp.AgentDownloadSHA256 != expectedSHA {
+		t.Fatalf("local fixture checksum mismatch: %s", resp.AgentDownloadSHA256)
+	}
 	if !resp.OK || resp.ServerVersion != "v1.2.3" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
@@ -63,7 +88,8 @@ func TestAgentWSReturnsVersionAndAgentDownloadURL(t *testing.T) {
 
 func TestAgentWSDefaultsMissingPlatformToServerPlatform(t *testing.T) {
 	ctx := context.Background()
-	app := NewApp(Config{Version: "v1.2.3", DatabasePath: filepath.Join(t.TempDir(), "gosshd.db")})
+	artifactRoot, expectedSHA := offlineAgentHandshakeArtifact(t, runtime.GOOS, runtime.GOARCH)
+	app := NewApp(Config{Version: "v1.2.3", AgentPath: artifactRoot, DatabasePath: filepath.Join(t.TempDir(), "gosshd.db")})
 	token := createAgentEnrollmentForTest(t, ctx, app, "platform-agent")
 	mux := http.NewServeMux()
 	app.routes(mux)
@@ -88,6 +114,9 @@ func TestAgentWSDefaultsMissingPlatformToServerPlatform(t *testing.T) {
 	resp, err := protocol.ReadJSONLine[protocol.StreamResponse](bufio.NewReader(conn))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if resp.AgentDownloadSHA256 != expectedSHA {
+		t.Fatalf("local fixture checksum mismatch: %s", resp.AgentDownloadSHA256)
 	}
 	wantSuffix := "/download/agent/" + runtime.GOOS + "/" + runtime.GOARCH
 	if !strings.HasSuffix(resp.AgentDownloadURL, wantSuffix) {

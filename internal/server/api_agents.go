@@ -248,7 +248,7 @@ if [ "$mode" = "install" ]; then
   fi
   sed "s|@GOSSHD_AGENT_HOME@|$home_replacement|g" >"$tmp.service" <<'SERVICE'
 [Unit]
-Description=gosshd bastion agent
+Description=LinkSphere Agent
 After=network-online.target
 Wants=network-online.target
 
@@ -312,7 +312,7 @@ function Assert-Administrator {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $principal = New-Object Security.Principal.WindowsPrincipal($identity)
   if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw "Administrator privileges are required to install gosshd-agent service. Re-run PowerShell as Administrator."
+    throw "Administrator privileges are required to install LinkSphere Agent service. Re-run PowerShell as Administrator."
   }
 }
 
@@ -384,7 +384,7 @@ function Invoke-ServiceCreateChecked {
     [Parameter(Mandatory=$true)][string]$BinaryPath
   )
   try {
-    New-Service -Name $ServiceName -BinaryPathName $BinaryPath -DisplayName "gosshd bastion agent" -StartupType Automatic | Out-Null
+    New-Service -Name $ServiceName -BinaryPathName $BinaryPath -DisplayName "LinkSphere Agent" -StartupType Automatic | Out-Null
   } catch {
     throw "failed to create $ServiceName service failed: $($_.Exception.Message)"
   }

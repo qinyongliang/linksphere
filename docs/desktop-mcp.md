@@ -7,7 +7,7 @@ Desktop control is an **independent module**, not an extension of the SSH comman
 - `internal/desktop`: typed JSON-lines RPC, validation, actor-owned sessions, subprocess lifecycle and native backends. It does not import the Bastion, Agent, store or MCP SDK.
 - `internal/desktop/contract`: leaf wire contract shared with the embedded Android backend; core aliases preserve the public API.
 - `internal/desktop/native/android`: independent Go backend using fixed Android platform tools and cancelable private streams.
-- `internal/desktop/mcptools`: MCP schemas/descriptions and image/tree presentation, reusable outside GOSSHD.
+- `internal/desktop/mcptools`: MCP schemas/descriptions and image/tree presentation, reusable outside LinkSphere.
 - `internal/server/mcp_desktop.go`: the small identity/authorization, Agent transport and audit adapter.
 - `internal/desktop/native/windows`: independent C# console helper using UI Automation, Win32 capture and input APIs.
 - `internal/desktop/native/macos`: independent Swift helper using Accessibility and ScreenCaptureKit.
@@ -19,7 +19,7 @@ Each native backend receives only typed desktop RPC. There is no shell-command m
 Desktop APIs operate on a **logged-in user's graphical session**. The native helper must run in that user context. A Windows LocalSystem Agent service may stay in Session 0: it starts only its native helper with the existing logged-in user token on the interactive desktop, using a restricted local named pipe. No logged-in user means no helper; multiple active remote sessions without an active console are rejected. Non-LocalSystem Windows services must use an appropriate logged-in user deployment. Root macOS LaunchDaemons do not implicitly gain GUI/TCC access; the macOS Agent still requires the logged-in GUI user context.
 
 - **Windows:** .NET Framework 4.x compiler and UI Automation assemblies, supplied with supported Windows installations. The embedded helper source is compiled into a private temporary directory and removed after the session. A prebuilt trusted `.exe` can instead be specified with `--desktop-helper`. Elevation, protected windows and UAC/secure desktops can reject observation or input. Default-mode window capture uses `PrintWindow`, with a visible-screen fallback when capture fails; strict background mode allows only `PrintWindow` and fails instead of falling back; GPU/protected surfaces and occluded fallback captures are not guaranteed to be complete.
-- **macOS 12.3+:** a separately built helper app, plus user-granted **Screen Recording** and **Accessibility** permissions in System Settings → Privacy & Security. These are distinct from GOSSHD grants. Permission checks do not prompt automatically; `desktop_request_permissions` may explicitly display OS prompts. A user must handle the prompts. Restart the helper/session after changing permission. Development ad-hoc signatures can require reauthorization after rebuilds; production distribution should use a stable signing identity.
+- **macOS 12.3+:** a separately built helper app, plus user-granted **Screen Recording** and **Accessibility** permissions in System Settings → Privacy & Security. These are distinct from LinkSphere grants. Permission checks do not prompt automatically; `desktop_request_permissions` may explicitly display OS prompts. A user must handle the prompts. Restart the helper/session after changing permission. Development ad-hoc signatures can require reauthorization after rebuilds; production distribution should use a stable signing identity.
 
 Custom-rendered apps may expose only a partial accessibility tree. Observe the screenshot when available, and use coordinate input only within the selected window. Do not claim an operation succeeded just because an event was delivered: observe the result.
 
@@ -168,7 +168,7 @@ Place the app at a stable path, grant the OS permissions, and configure:
 
 Open a local session with `desktop_session_open({"target_id":"local"})`. The local host writes only audit metadata to stderr; stdout is reserved for MCP. Neither flag silently enables the other: control also requires read.
 
-## Through a remote GOSSHD Agent
+## Through a remote LinkSphere Agent
 
 1. Run the updated Windows/macOS Agent as the logged-in desktop user. Desktop RPC is enabled by default; existing installation and self-update commands do not need an enable argument:
 

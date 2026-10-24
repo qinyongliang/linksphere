@@ -15,9 +15,14 @@ func TestMainSchemaMigrationsFreshAndRepeated(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		assertMigrationVersions(t, st.DB(), 1, 2, 3, 4, 5, 6, 7, 8)
+		assertMigrationVersions(t, st.DB(), 1, 2, 3, 4, 5, 6, 7, 8, 9)
 		assertSchemaObject(t, st.DB(), "table", "temporary_ssh_authorizations")
 		assertSchemaObject(t, st.DB(), "table", "tunnels")
+		assertSchemaObject(t, st.DB(), "table", "communications_access")
+		var communicationsGrants int
+		if err := st.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM communications_access").Scan(&communicationsGrants); err != nil || communicationsGrants != 0 {
+			t.Fatalf("migration must not create communications grants: %d %v", communicationsGrants, err)
+		}
 		for _, index := range []string{"idx_ssh_targets_proxy_target", "idx_policy_targets_target", "idx_command_audit_target_started", "idx_temporary_ssh_authorizations_target"} {
 			assertSchemaObject(t, st.DB(), "index", index)
 		}
@@ -53,9 +58,14 @@ func TestMainSchemaMigrationsUpgradeLegacyData(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	assertMigrationVersions(t, st.DB(), 1, 2, 3, 4, 5, 6, 7, 8)
+	assertMigrationVersions(t, st.DB(), 1, 2, 3, 4, 5, 6, 7, 8, 9)
 	assertSchemaObject(t, st.DB(), "table", "temporary_ssh_authorizations")
 	assertSchemaObject(t, st.DB(), "table", "tunnels")
+	assertSchemaObject(t, st.DB(), "table", "communications_access")
+	var communicationsGrants int
+	if err := st.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM communications_access").Scan(&communicationsGrants); err != nil || communicationsGrants != 0 {
+		t.Fatalf("migration must not create communications grants: %d %v", communicationsGrants, err)
+	}
 	var name, alias string
 	if err := st.DB().QueryRowContext(ctx, "SELECT name, alias FROM ssh_targets WHERE id = 'target-1'").Scan(&name, &alias); err != nil {
 		t.Fatal(err)
@@ -160,7 +170,7 @@ func TestMainSchemaMigrationsApplyMissingLowerVersion(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	assertMigrationVersions(t, st.DB(), 1, 2, 3, 4, 5, 6, 8)
+	assertMigrationVersions(t, st.DB(), 1, 2, 3, 4, 5, 6, 8, 9)
 	if err = st.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +179,7 @@ func TestMainSchemaMigrationsApplyMissingLowerVersion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		assertMigrationVersions(t, st.DB(), 1, 2, 3, 4, 5, 6, 7, 8)
+		assertMigrationVersions(t, st.DB(), 1, 2, 3, 4, 5, 6, 7, 8, 9)
 		assertSchemaObject(t, st.DB(), "table", "desktop_access")
 		assertSchemaObject(t, st.DB(), "index", "desktop_access_target")
 		var appliedAt, email string

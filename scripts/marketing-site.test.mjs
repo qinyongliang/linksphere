@@ -91,11 +91,11 @@ test('Chromium responsive, interaction and progressive enhancement checks', {
   await mkdir(output, { recursive:true });
   let browser;
   try {
-    browser = await chromium.launch({ executablePath:process.env.GOSSHD_UI_E2E_BROWSER, headless:true });
+    browser = await chromium.launch({ executablePath:process.env.GOSSHD_UI_E2E_BROWSER, headless:true, chromiumSandbox:true });
     for (const file of pages) {
       const zh = file.includes('zh-CN');
       for (const width of [1440, 768, 390]) {
-        const context = await browser.newContext({ viewport:{ width, height:1000 }, permissions:['clipboard-read', 'clipboard-write'], reducedMotion:'reduce' });
+        const context = await browser.newContext({ viewport:{ width, height:1000 }, reducedMotion:'reduce' });
         const page = await context.newPage();
         const errors = [];
         page.on('pageerror', error => errors.push(error.message));
@@ -108,7 +108,7 @@ test('Chromium responsive, interaction and progressive enhancement checks', {
         const noOverflow = async () => assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), file + ' overflows at ' + width);
         await noOverflow();
         assert.equal(await page.locator('.scroll-scene').count(),4);
-        assert.equal(await page.locator('.motion-toggle').count(),0);
+        assert.equal(await page.locator('.motion-toggle').count(),1);
         assert.equal(await page.locator('.world-pulse,.scene-shade').count(),0);
         for (const id of ['home','experience','files','connections']) {
           await page.locator('#'+id).scrollIntoViewIfNeeded();
@@ -168,12 +168,58 @@ test('Chromium responsive, interaction and progressive enhancement checks', {
     await motionPage.locator('.intelligence-art').scrollIntoViewIfNeeded();
     await motionPage.locator('.intelligence-art.layers-ready').waitFor();
     await motionPage.waitForFunction(() => document.querySelector('.glass-folder img').style.transform.includes('translate3d'));
+    const sphere = motionPage.locator('.glass-sphere');
+    const pose = () => sphere.evaluate(el => getComputedStyle(el).transform);
+    const idleBefore = await pose();
+    await motionPage.waitForTimeout(450);
+    assert.notEqual(await pose(), idleBefore, 'experience animates without scroll or pointer input');
+    await motionPage.screenshot({path:path.join(output,'experience-ambient-wide.png')});
+    await motionPage.locator('.motion-toggle').click();
+    await motionPage.waitForFunction(()=>document.documentElement.dataset.motion==='paused');
+    await motionPage.waitForTimeout(100);
+    const pausedPose = await pose();
+    await motionPage.waitForTimeout(350);
+    assert.equal(await pose(), pausedPose, 'manual pause freezes ambient motion');
+    assert.equal(await motionPage.locator('.motion-toggle').getAttribute('aria-pressed'), 'false');
+    await motionPage.locator('.motion-toggle').click();
+    await motionPage.waitForTimeout(450);
+    assert.notEqual(await pose(), pausedPose, 'manual resume restarts motion');
+    await motionPage.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}));
+    await motionPage.waitForFunction(()=>document.querySelector('#experience').classList.contains('offscreen'));
+    assert.equal(await sphere.evaluate(el=>getComputedStyle(el).animationPlayState),'paused');
+    await motionPage.locator('#experience').scrollIntoViewIfNeeded();
+    await motionPage.waitForFunction(()=>!document.querySelector('#experience').classList.contains('offscreen'));
+    assert.equal(await sphere.evaluate(el=>getComputedStyle(el).animationPlayState),'running');
     await motionPage.screenshot({path:path.join(output,'layers-in-motion.png')});
-    assert.equal(await motionPage.locator('.motion-toggle').count(),0);
+    assert.equal(await motionPage.locator('.motion-toggle').count(),1);
     await motionPage.emulateMedia({reducedMotion:'reduce'});
     await motionPage.evaluate(()=>window.dispatchEvent(new Event('resize')));
     await motionPage.waitForFunction(()=>document.documentElement.dataset.motion==='paused');
+    assert.equal(await motionPage.locator('.motion-toggle').isDisabled(), true);
+    assert.equal(await sphere.evaluate(el=>getComputedStyle(el).animationName), 'none');
     await motionContext.close();
+
+    const mobileMotion = await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,reducedMotion:'no-preference'});
+    const mobilePage = await mobileMotion.newPage();
+    const mobileErrors = [];
+    mobilePage.on('pageerror', error => mobileErrors.push(error.message));
+    mobilePage.on('response', response => {if(response.status()>=400)mobileErrors.push(response.url());});
+    await mobilePage.goto(base+'index.zh-CN.html#experience');
+    await mobilePage.locator('.intelligence-art.layers-ready').waitFor();
+    const mobileSphere = mobilePage.locator('.glass-sphere');
+    const initialMobile = await mobileSphere.evaluate(el=>getComputedStyle(el).transform);
+    await mobilePage.waitForTimeout(450);
+    assert.notEqual(await mobileSphere.evaluate(el=>getComputedStyle(el).transform),initialMobile,'touch devices animate without hover');
+    assert.ok(await mobilePage.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await mobilePage.screenshot({path:path.join(output,'experience-ambient-mobile.png')});
+    await mobilePage.locator('.motion-toggle').press('Enter');
+    await mobilePage.waitForFunction(()=>document.documentElement.dataset.motion==='paused');
+    await mobilePage.waitForTimeout(100);
+    const stoppedMobile=await mobileSphere.evaluate(el=>getComputedStyle(el).transform);
+    await mobilePage.waitForTimeout(350);
+    assert.equal(await mobileSphere.evaluate(el=>getComputedStyle(el).transform),stoppedMobile,'keyboard pause works on narrow screen');
+    assert.deepEqual(mobileErrors,[]);
+    await mobileMotion.close();
 
     const fallbackContext = await browser.newContext({viewport:{width:1280,height:900}});
     const fallbackPage = await fallbackContext.newPage();

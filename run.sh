@@ -11,7 +11,7 @@ if [ -z "$version" ]; then
 fi
 
 if [ -z "$version" ] || [ "$version" = "latest" ]; then
-  echo "unable to resolve latest gosshd release version" >&2
+  echo "unable to resolve latest LinkSphere release version" >&2
   exit 1
 fi
 

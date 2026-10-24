@@ -17,9 +17,10 @@ type mcpOK struct {
 }
 
 type mcpActor struct {
-	User       store.User
-	ToolGroups map[string]bool
-	Runtime    apiRuntime
+	User           store.User
+	ToolGroups     map[string]bool
+	Runtime        apiRuntime
+	communications *communicationsPrincipal
 }
 
 func (a *App) mcpHandler() http.Handler {
@@ -32,6 +33,13 @@ func (a *App) mcpHandler() http.Handler {
 		handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 			return a.newMCPServer(actor)
 		}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+		// Only the authenticated bearer branch supplies provenance. Cookie and
+		// loopback actors explicitly mask any pre-existing principal on this context.
+		principal := communicationsPrincipal{}
+		if actor.communications != nil {
+			principal = *actor.communications
+		}
+		r = r.WithContext(context.WithValue(r.Context(), communicationsPrincipalKey{}, principal))
 		handler.ServeHTTP(w, r)
 	})
 }
@@ -67,7 +75,9 @@ func (a *App) actorForMCPRequest(r *http.Request) (mcpActor, error) {
 	if err != nil {
 		return mcpActor{}, err
 	}
-	return mcpActor{User: user, ToolGroups: mcpToolGroupSet(token.ToolGroups), Runtime: runtimeInfo}, nil
+	principal := &communicationsPrincipal{actorID: user.ID, tokenID: token.ID}
+	copy(principal.tokenHash[:], codeHash(tokenValue))
+	return mcpActor{User: user, ToolGroups: mcpToolGroupSet(token.ToolGroups), Runtime: runtimeInfo, communications: principal}, nil
 }
 
 func bearerToken(r *http.Request) string {

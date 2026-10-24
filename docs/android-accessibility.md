@@ -10,7 +10,7 @@ The foreground service starts the fixed Agent executable installed with the APK,
 
 1. Obtain the APK, SHA256 file and public signing certificate from the project's tagged GitHub Release. The existing **Android Agent APK** workflow builds and signs these assets; a push to main or manual dispatch also produces a signed Actions artifact. Pull requests produce an explicitly debug-signed test APK.
 2. Check the APK checksum, transfer/download it to the phone, open it and confirm Android's package installer prompts locally.
-3. Open **GOSSHD Agent**. Enter the HTTPS server address and the **enrollment token** generated in that server's private-node / Agent installation guide. A server address alone cannot authorize registration to an account.
+3. Open **LinkSphere Agent**. Enter the HTTPS server address and the **enrollment token** generated in that server's private-node / Agent installation guide. A server address alone cannot authorize registration to an account.
 4. Tap **Save and start Agent** and allow notifications. The service notification and screen display the Agent's connection status. Server credentials are kept in private app data, never passed in ADB arguments or Intent extras. Plain HTTP is accepted only for loopback development.
 5. Optionally enable **Restore Agent / control after boot** and adjust battery optimization / vendor auto-start settings.
 
@@ -54,7 +54,7 @@ The Agent can run without accessibility. To enable native node actions, gestures
 
 Activation choices:
 
-- **Manual:** tap Enable accessibility manually and enable GOSSHD Agent in system settings. Some sideload/ROM restricted-settings policies require owner action in the app's system details page.
+- **Manual:** tap Enable accessibility manually and enable LinkSphere Agent in system settings. Some sideload/ROM restricted-settings policies require owner action in the app's system details page.
 - **ADB:** run the copied fixed grant command, then tap Activate with ADB grant. The implementation merges this component with other enabled services instead of replacing them. The optional host-helper flag performs the grant only.
 - **Shizuku:** install/start official Shizuku, tap Activate with Shizuku and approve its local manager dialog. Its short-lived UserService only enables this app's fixed accessibility component. ADB-started Shizuku must be restarted after reboot, but a live Shizuku process is not required for ongoing accessibility operations.
 

@@ -8,7 +8,7 @@ mode=${3:-install}
 [ -n "${PREFIX:-}" ] && [ -x "$PREFIX/bin/sh" ] || { echo 'Unrooted Agent installation requires Termux. ADB/Shizuku can activate the APK, but do not install a Termux Agent for you.' >&2;exit 1; }
 [ -f "$apk" ] || { echo 'Companion APK not found.' >&2;exit 1; }
 if command -v termux-open >/dev/null 2>&1;then termux-open --view "$apk";else echo "Install the verified companion APK locally: $apk";fi
-printf '%s\n' 'In GOSSHD Desktop: enable accessibility manually or with ADB/Shizuku, enable local control, then copy its pairing token.'
+printf '%s\n' 'In LinkSphere Agent: enable accessibility manually or with ADB/Shizuku, enable local control, then copy its pairing token.'
 mkdir -p "$HOME/.gosshd"
 chmod 700 "$HOME/.gosshd"
 token_file="$HOME/.gosshd/desktop-pairing.token"

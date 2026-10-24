@@ -30,6 +30,8 @@ Windows, macOS and Android support desktop actions after local setup and permiss
 
 File transfers try encrypted P2P first and use relay when unavailable; direct connections are not guaranteed. Web uploads have a 1 GiB limit. LinkSphere provides tools; the connected AI assistant plans and executes tasks.
 
+A plugin architecture for Android root devices provides a shared foundation for calls, audio, SMS and events, with access governed by device capabilities and explicit permissions. Communication features require a trusted root service. Remote communication and its MCP tools are not yet available in this version; device support requires validation after integration.
+
 ## Ready-to-share announcement
 
 Meet LinkSphere: let AI manage all your devices. Connect Windows, macOS, Linux and Android in one self-hosted workspace. Give your AI assistant the tools to run commands, manage files, operate supported desktops and connect services. Start with your first device and bring AI into your everyday workflow.

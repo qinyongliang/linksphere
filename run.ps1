@@ -15,7 +15,7 @@ if (-not $version) {
 }
 
 if (-not $version) {
-  throw "unable to resolve latest gosshd release version"
+  throw "unable to resolve latest LinkSphere release version"
 }
 
 $machine = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()

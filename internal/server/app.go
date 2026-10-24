@@ -376,9 +376,9 @@ func (a *App) Run(ctx context.Context) error {
 func (a *App) logStartupInstructions() {
 	base := a.startupHTTPBase()
 	if a.cfg.ClientMode {
-		log.Printf("gosshd-server ready in client mode")
+		log.Printf("LinkSphere Server ready in client mode")
 	} else {
-		log.Printf("gosshd-server ready")
+		log.Printf("LinkSphere Server ready")
 	}
 	log.Printf("http listening on %s", a.cfg.HTTPListen)
 	log.Printf("ssh listening on %s", a.cfg.SSHListen)
