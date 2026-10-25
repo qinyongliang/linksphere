@@ -192,7 +192,16 @@ func (d *LocalDispatcher) Invoke(ctx context.Context, binding DispatchBinding, o
 	if len(result) > 1024*1024 || !json.Valid(result) {
 		return nil, errors.New("invalid local communications result")
 	}
-	return append(json.RawMessage(nil), result...), nil
+	ownedResult := append(json.RawMessage(nil), result...)
+	// Session cancellation reaches call asynchronously. Check the owning lifecycle
+	// after copying too, so a completed Close cannot return a successful result.
+	if call.Err() != nil {
+		return nil, call.Err()
+	}
+	if d.closed.Load() || d.session.Err() != nil {
+		return nil, ErrDispatchDenied
+	}
+	return ownedResult, nil
 }
 
 // Close rejects new admission and cancels ongoing provider contexts. It cannot
