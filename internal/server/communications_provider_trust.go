@@ -49,6 +49,8 @@ type communicationsRootConnection struct {
 	// Set only after a complete signature-authenticated SSH handshake. Access is
 	// under authority.mu, and membership is also required by the verifier.
 	authenticated bool
+	sshConnection *ssh.ServerConn
+	exchangeLease *communicationsRootStream
 }
 
 func (c *communicationsRootConnection) CloseChan() <-chan struct{} { return c.done }
@@ -168,6 +170,7 @@ func (a *communicationsRootAuthority) accept(ctx context.Context, raw net.Conn, 
 		c.close()
 		return nil, errCommunicationsSessionDenied
 	}
+	c.sshConnection = conn
 	c.authenticated = true
 	a.mu.Unlock()
 	return c, nil
