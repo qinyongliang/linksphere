@@ -260,3 +260,21 @@ func TestCommunicationsAuthorizationProductionScopeRemainsUnavailable(t *testing
 		t.Fatal("nil gate allowed")
 	}
 }
+
+func TestCommunicationsAuthorizationRejectsTypedNilRepositoryBeforeCallbacks(t *testing.T) {
+	var repository *communicationsAuthFixture
+	authorizer := &communicationsAuthorizer{
+		repo: repository,
+		now:  func() time.Time { t.Fatal("missing repository must not consult clock"); return time.Time{} },
+		currentBinding: func(context.Context) (communicationsProviderSession, error) {
+			t.Fatal("missing repository must not consult provider binding")
+			return communicationsProviderSession{}, nil
+		},
+	}
+	principal := communicationsPrincipal{actorID: "actor", tokenID: "token", tokenHash: [32]byte{1}}
+	ctx := context.WithValue(context.Background(), communicationsPrincipalKey{}, principal)
+	binding := serviceplugins.DispatchBinding{ActorID: "actor", TargetID: "target", ProviderID: "provider", SessionID: "session", Generation: 1}
+	if err := authorizer.Authorize(ctx, binding, "call"); !errors.Is(err, errCommunicationsDenied) {
+		t.Fatalf("typed nil repository must fail closed, got %v", err)
+	}
+}

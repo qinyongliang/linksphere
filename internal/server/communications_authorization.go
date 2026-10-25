@@ -52,7 +52,7 @@ type communicationsAuthorizer struct {
 var _ serviceplugins.DispatchAuthorizer = (*communicationsAuthorizer)(nil)
 
 func (a *communicationsAuthorizer) Authorize(ctx context.Context, binding serviceplugins.DispatchBinding, operation string) error {
-	if a == nil || a.repo == nil || a.currentBinding == nil || a.now == nil || ctx == nil || ctx.Err() != nil {
+	if a == nil || nilCommunicationsValue(a.repo) || a.currentBinding == nil || a.now == nil || ctx == nil || ctx.Err() != nil {
 		return errCommunicationsDenied
 	}
 	if operation != "call" && operation != "audio" && operation != "sms" {
