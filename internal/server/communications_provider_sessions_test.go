@@ -260,15 +260,14 @@ func TestCommunicationsProviderSessionsCallerLifetimeDoesNotOwnRegistration(t *t
 	}
 }
 func TestCommunicationsProviderSessionsFailedReplacementKeepsPrevious(t *testing.T) {
-	var deny atomic.Bool
-	m := providerSessionManagerFixture(t, providerSessionVerifierFixture(func(context.Context, communicationsProviderCandidate) error {
-		if deny.Load() {
+	previous := newProviderSessionConnectionFixture()
+	m := providerSessionManagerFixture(t, providerSessionVerifierFixture(func(_ context.Context, candidate communicationsProviderCandidate) error {
+		if candidate.connection != previous {
 			return errors.New("fixture denial")
 		}
 		return nil
 	}), 2)
-	old := providerSessionRegisterFixture(t, m, providerSessionCandidateFixture(newProviderSessionConnectionFixture()))
-	deny.Store(true)
+	old := providerSessionRegisterFixture(t, m, providerSessionCandidateFixture(previous))
 	if _, e := m.register(context.Background(), providerSessionCandidateFixture(newProviderSessionConnectionFixture())); e == nil {
 		t.Fatal("denied verifier accepted")
 	}
