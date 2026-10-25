@@ -76,7 +76,7 @@ func TestCommunicationsProviderSessionsDefaultDeny(t *testing.T) {
 func TestCommunicationsProviderSessionsInvalidInputsNeverVerify(t *testing.T) {
 	var calls atomic.Int32
 	v := providerSessionVerifierFixture(func(context.Context, communicationsProviderCandidate) error { calls.Add(1); return nil })
-	for _, kind := range []string{"agent", "target", "provider", "long", "nil-connection", "typed-nil", "nil-channel", "closed", "cancelled", "nil-context", "uninitialized"} {
+	for _, kind := range []string{"agent", "target", "provider", "agent-utf8", "target-utf8", "provider-utf8", "long", "nil-connection", "typed-nil", "nil-channel", "closed", "cancelled", "nil-context", "uninitialized"} {
 		t.Run(kind, func(t *testing.T) {
 			m := providerSessionManagerFixture(t, v, 2)
 			c := providerSessionCandidateFixture(newProviderSessionConnectionFixture())
@@ -88,6 +88,12 @@ func TestCommunicationsProviderSessionsInvalidInputsNeverVerify(t *testing.T) {
 				c.targetID = " bad"
 			case "provider":
 				c.providerID = "bad\n"
+			case "agent-utf8":
+				c.agentID = "bad\xff"
+			case "target-utf8":
+				c.targetID = "bad\xff"
+			case "provider-utf8":
+				c.providerID = "bad\xff"
 			case "long":
 				c.providerID = strings.Repeat("x", 257)
 			case "nil-connection":
@@ -352,7 +358,7 @@ func TestCommunicationsProviderSessionsPendingBoundAndClose(t *testing.T) {
 	}
 }
 func TestCommunicationsProviderSessionsEntropyFailureAndGenerationWrapDeny(t *testing.T) {
-	for _, kind := range []string{"entropy", "invalid-id", "wrap"} {
+	for _, kind := range []string{"entropy", "invalid-id", "utf8-id", "wrap"} {
 		t.Run(kind, func(t *testing.T) {
 			m := providerSessionManagerFixture(t, providerSessionVerifierFixture(providerSessionAllow), 1)
 			switch kind {
@@ -360,6 +366,8 @@ func TestCommunicationsProviderSessionsEntropyFailureAndGenerationWrapDeny(t *te
 				m.newID = func() (string, error) { return "", errors.New("entropy fixture") }
 			case "invalid-id":
 				m.newID = func() (string, error) { return " ", nil }
+			case "utf8-id":
+				m.newID = func() (string, error) { return "bad\xff", nil }
 			case "wrap":
 				m.generation = ^uint64(0)
 			}
@@ -481,5 +489,51 @@ func TestCommunicationsProviderSessionsCallerContextCallbackOutsidePinLock(t *te
 	go func() { _, _, e := m.pin(ctx, current.Binding, current.AgentID); result <- e }()
 	if e := providerSessionAwait(t, result); !errors.Is(e, errCommunicationsSessionDenied) {
 		t.Fatal("cancelled caller context accepted")
+	}
+}
+
+func TestCommunicationsProviderSessionsUnicodeAndInvalidPrincipal(t *testing.T) {
+	m := providerSessionManagerFixture(t, providerSessionVerifierFixture(providerSessionAllow), 1)
+	c := providerSessionCandidateFixture(newProviderSessionConnectionFixture())
+	c.agentID, c.targetID, c.providerID = "设备", "目标", "服务"
+	original := providerSessionRegisterFixture(t, m, c)
+	valid := providerSessionContextFixture("用户")
+	current, err := m.current(valid, c.targetID, c.providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.pin(valid, current.Binding, c.agentID); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"actor", "token"} {
+		t.Run(field, func(t *testing.T) {
+			p := communicationsPrincipal{actorID: "用户", tokenID: "token-fixture", tokenHash: [32]byte{1}}
+			if field == "actor" {
+				p.actorID = "bad\xff"
+			} else {
+				p.tokenID = "bad\xff"
+			}
+			ctx := context.WithValue(context.Background(), communicationsPrincipalKey{}, p)
+			if _, err := m.current(ctx, c.targetID, c.providerID); err == nil {
+				t.Fatal("invalid principal accepted")
+			}
+			if _, _, err := m.pin(ctx, current.Binding, c.agentID); err == nil {
+				t.Fatal("invalid principal pinned")
+			}
+		})
+	}
+	m.newID = func() (string, error) { return "bad\xff", nil }
+	replacement := c
+	replacement.connection = newProviderSessionConnectionFixture()
+	if _, err := m.register(context.Background(), replacement); err == nil {
+		t.Fatal("invalid replacement session accepted")
+	}
+	after, err := m.current(valid, c.targetID, c.providerID)
+	if err != nil || after.Binding.SessionID != original.identity.SessionID {
+		t.Fatal("old binding replaced on invalid new identity")
+	}
+	pinned, life, err := m.pin(valid, current.Binding, c.agentID)
+	if err != nil || pinned != c.connection || life.Err() != nil {
+		t.Fatal("old connection invalidated")
 	}
 }

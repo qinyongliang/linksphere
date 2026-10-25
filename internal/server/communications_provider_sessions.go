@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/qinyongliang/linksphere/internal/serviceplugins"
@@ -73,7 +74,7 @@ func nilCommunicationsValue(value any) bool {
 	return false
 }
 func communicationsIdentifier(value string) bool {
-	return value != "" && len(value) <= 256 && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\x00\r\n")
+	return value != "" && len(value) <= 256 && utf8.ValidString(value) && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\x00\r\n")
 }
 func communicationsChannelClosed(ch <-chan struct{}) bool {
 	select {
