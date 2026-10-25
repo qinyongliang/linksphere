@@ -95,7 +95,7 @@ func (b *CallEventBuffer) Append(binding DispatchBinding, e CallEvent) error {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.closed || b.dispatcher.closed.Load() || b.sequence == math.MaxUint64 || len(b.entries) == 0 {
+	if b.closed || b.dispatcher.closed.Load() || b.dispatcher.session.Err() != nil || b.sequence == math.MaxUint64 || len(b.entries) == 0 {
 		return ErrDispatchDenied
 	}
 	// Validated short substrings may still reference a producer's large backing
@@ -126,7 +126,7 @@ func (b *CallEventBuffer) Read(ctx context.Context, binding DispatchBinding, cur
 	b.mu.Lock()
 	closed := b.closed
 	b.mu.Unlock()
-	if closed || b.dispatcher.closed.Load() || ctx.Err() != nil {
+	if closed || b.dispatcher.closed.Load() || b.dispatcher.session.Err() != nil || ctx.Err() != nil {
 		return empty, ErrDispatchDenied
 	}
 	return page, nil

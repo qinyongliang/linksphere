@@ -1,0 +1,17 @@
+# Transport-bound local dispatcher lifetime
+
+`NewProviderLocalDispatcher` composes an already authenticated dedicated `ProviderTransport` with the existing local dispatcher. It requires an immutable verified transport, exact configured providerID, actual Android UID0 at admission, the full trusted host-supplied actor/target/provider/session/generation binding, a matching local provider identity, and a mandatory per-invocation authorizer. It is not actor/session enrollment, does not infer ActorID from SSH or wire fields, and installs no network handler or registry entry. The transport still rejects all incoming dispatch channels.
+
+The existing local constructor retains its Background-parent behavior. The new constructor derives the dispatcher session from the transport's private cancellation context and rechecks cancellation after trusted environment/provider callbacks. Existing command, event and MCP adapters continue consuming the same LocalDispatcher, rather than a new authorization implementation. A child Close does not close the transport or siblings.
+
+Transport Close synchronously cancels the parent and its child dispatcher sessions, then closes the public Done signal, then closes the raw connection. This ordering is intentional: Go closes a context's own Done before finishing child cancellation, so directly exposing the parent context Done would be too early for the stronger composition contract. Public Done does not mean provider side effects have been undone or every invocation/drain goroutine exited. Call contexts inherit cancellation through the existing invocation path; late successful provider results are still rejected. Do not copy transport/dispatcher values containing synchronization state; retain constructor-returned pointers.
+
+CallEventBuffer's post-callback and return checks now also inspect session cancellation, not just the explicit Close flag. This prevents an EventCapabilities callback that closes the parent from appending a new event after revocation. The local buffer owner must still Close its buffer to erase retained entries; parent cancellation blocks access but is not automatic buffer destruction.
+
+## Validation
+
+Final same-source race selections:8 top-level dispatcher tests/20 with subtests, three repeats=60 passes; full serviceplugins/protocol161 unique/483 passes; server Communications173 unique/519 passes; native build passed. Inputs remained hash-identical; no race, skip or hanging test process. The targeted old event postguard comparison failed three times as expected; corrected guard passed the unchanged assertions. A separate cancel-phase gate proves public Done is not published before synchronous cancellation returns, without weakening the real SSH peer-disconnect child-cancellation assertion.
+
+One server-test compilation stopped at the550MiB disk guard before tests ran; its empty log/exit90 remains. Only hash-identical inactive dependency duplicates were then cleaned under the existing authorization, and the remaining same-frozen-source validation completed separately. No test timeout/assertion or storage guard was relaxed.
+
+Most binding cases are explicit unit lifetime fixtures; one integration uses a real synthetic loopback SSH handshake with a test-only Android/root environment hook. None proves real Android/device execution, physical calls/audio/SMS, actor handoff over a production channel, or production deployment. No GitHub Actions validation.

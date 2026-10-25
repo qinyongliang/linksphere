@@ -29,10 +29,14 @@ type ProviderTransportConfig struct {
 // ProviderTransport exposes lifecycle only. There is deliberately no channel,
 // command or dispatcher API, and no incoming channel is accepted in this slice.
 type ProviderTransport struct {
-	raw       net.Conn
-	done      chan struct{}
-	drained   chan struct{}
-	closeOnce sync.Once
+	raw        net.Conn
+	lifetime   context.Context
+	done       chan struct{}
+	cancel     context.CancelFunc
+	providerID string
+	verified   bool
+	drained    chan struct{}
+	closeOnce  sync.Once
 }
 
 // NewProviderTransport does not dial or listen. Disabled leaves raw untouched;
@@ -115,16 +119,19 @@ func newProviderTransport(environment func() Environment, ctx context.Context, r
 		return nil, ErrProviderTransportDenied
 	}
 	select {
-	case <-transport.done:
+	case <-transport.Done():
 		return nil, ErrProviderTransportDenied
 	default:
 	}
+	transport.providerID = strings.Clone(config.ProviderID)
+	transport.verified = true
 	accepted = true
 	return transport, nil
 }
 
 func trackProviderTransport(raw net.Conn, conn ssh.Conn, channels <-chan ssh.NewChannel, requests <-chan *ssh.Request) *ProviderTransport {
-	transport := &ProviderTransport{raw: raw, done: make(chan struct{}), drained: make(chan struct{})}
+	lifetime, cancel := context.WithCancel(context.Background())
+	transport := &ProviderTransport{raw: raw, lifetime: lifetime, cancel: cancel, done: make(chan struct{}), drained: make(chan struct{})}
 	rejected := make(chan struct{})
 	go func() {
 		defer close(rejected)
@@ -149,7 +156,8 @@ func trackProviderTransport(raw net.Conn, conn ssh.Conn, channels <-chan ssh.New
 	return transport
 }
 
-// Done closes as soon as invalidated, not as proof every drain goroutine exited.
+// Done closes after synchronous dispatcher-session cancellation, before raw Close.
+// It is not proof every provider operation or drain goroutine has exited.
 // A handshake context is not retained as the successful transport's lifetime.
 func (t *ProviderTransport) Done() <-chan struct{} {
 	if t == nil {
@@ -159,7 +167,17 @@ func (t *ProviderTransport) Done() <-chan struct{} {
 }
 func (t *ProviderTransport) Close() error {
 	if t != nil {
-		t.closeOnce.Do(func() { close(t.done); _ = t.raw.Close() })
+		t.closeOnce.Do(func() {
+			if t.cancel != nil {
+				t.cancel()
+			}
+			if t.done != nil {
+				close(t.done)
+			}
+			if !nilInterface(t.raw) {
+				_ = t.raw.Close()
+			}
+		})
 	}
 	return nil
 }

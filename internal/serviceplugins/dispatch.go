@@ -70,6 +70,14 @@ func NewLocalDispatcher(binding DispatchBinding, provider DispatchProvider, auth
 }
 
 func newLocalDispatcher(environment func() Environment, binding DispatchBinding, provider DispatchProvider, authorizer DispatchAuthorizer) (*LocalDispatcher, error) {
+	return newLocalDispatcherWithLifetime(context.Background(), environment, binding, provider, authorizer)
+}
+
+func newLocalDispatcherWithLifetime(parent context.Context, environment func() Environment, binding DispatchBinding, provider DispatchProvider, authorizer DispatchAuthorizer) (*LocalDispatcher, error) {
+	if parent == nil || parent.Err() != nil {
+		return nil, ErrDispatchDenied
+	}
+
 	if environment == nil || nilInterface(provider) || nilInterface(authorizer) || !validDispatchBinding(binding) {
 		return nil, ErrDispatchDenied
 	}
@@ -80,7 +88,11 @@ func newLocalDispatcher(environment func() Environment, binding DispatchBinding,
 	if !matchesProvider(binding, provider.Identity()) {
 		return nil, ErrDispatchDenied
 	}
-	session, cancel := context.WithCancel(context.Background())
+	session, cancel := context.WithCancel(parent)
+	if session.Err() != nil {
+		cancel()
+		return nil, ErrDispatchDenied
+	}
 	return &LocalDispatcher{binding: binding, provider: provider, authorizer: authorizer, environment: environment, session: session, cancel: cancel}, nil
 }
 
@@ -155,7 +167,7 @@ func (d *LocalDispatcher) check(ctx context.Context, binding DispatchBinding, op
 
 // live checks trusted local state; it never authenticates caller strings.
 func (d *LocalDispatcher) live(binding DispatchBinding) bool {
-	if d == nil || d.session == nil || d.cancel == nil || d.environment == nil || nilInterface(d.provider) || nilInterface(d.authorizer) || d.closed.Load() || binding != d.binding || !validDispatchBinding(binding) {
+	if d == nil || d.session == nil || d.cancel == nil || d.environment == nil || nilInterface(d.provider) || nilInterface(d.authorizer) || d.closed.Load() || d.session.Err() != nil || binding != d.binding || !validDispatchBinding(binding) {
 		return false
 	}
 	env := d.environment()
@@ -168,7 +180,7 @@ func (d *LocalDispatcher) live(binding DispatchBinding) bool {
 // Invoke accepts only a bounded JSON object. Both argument and result buffers
 // are copied at this boundary; provider transient allocations are not bounded here.
 func (d *LocalDispatcher) Invoke(ctx context.Context, binding DispatchBinding, operation string, args json.RawMessage) (json.RawMessage, error) {
-	if d == nil || d.session == nil || d.cancel == nil || ctx == nil || ctx.Err() != nil || d.closed.Load() || binding != d.binding || len(args) == 0 || len(args) > 64*1024 {
+	if d == nil || d.session == nil || d.cancel == nil || ctx == nil || ctx.Err() != nil || d.closed.Load() || d.session.Err() != nil || binding != d.binding || len(args) == 0 || len(args) > 64*1024 {
 		return nil, ErrDispatchDenied
 	}
 	owned := append(json.RawMessage(nil), args...)
