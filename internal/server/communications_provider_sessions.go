@@ -225,17 +225,21 @@ func (m *communicationsProviderSessionManager) current(ctx context.Context, targ
 	// A registration proves only its original target snapshot. Recheck the exact
 	// pinned transport before exposing a fresh session; never hold the manager
 	// lock across the host verifier. Keep the admission slot until it returns.
+	defer func() {
+		m.mu.Lock()
+		m.activeVerifications--
+		m.mu.Unlock()
+	}()
 	verification, cancel := context.WithCancel(ctx)
+	defer cancel()
 	stopLifetime := context.AfterFunc(entry.lifetime, cancel)
+	defer stopLifetime()
 	err := m.verifier.verifyProvider(verification, communicationsProviderCandidate{
 		agentID: agent, targetID: id.TargetID, providerID: id.ProviderID, connection: entry.connection,
 	})
 	verificationErr := verification.Err()
-	stopLifetime()
-	cancel()
 	callerErr := ctx.Err()
 	m.mu.Lock()
-	m.activeVerifications--
 	unchanged := !m.closed && m.entries[scope] == entry && entry.lifetime.Err() == nil && !communicationsChannelClosed(entry.connectionClosed)
 	// A cancelled caller does not revoke a shared healthy binding. A completed
 	// denial does invalidate that old binding, never a replacement registration.
