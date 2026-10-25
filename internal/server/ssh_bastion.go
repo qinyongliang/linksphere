@@ -1013,9 +1013,10 @@ func (a *App) shellOnTarget(ctx context.Context, target store.SSHTarget, ch goss
 		_, _ = copyAndRecord(ch.Stderr(), stderr, recorder)
 	}()
 	err = session.Wait()
-	_ = closeWriter(stdin)
-	_ = ch.CloseWrite()
+	// EOF must follow both output writers: ssh.Channel.CloseWrite races with Write.
+	// The stdin copy goroutine alone owns its half-close.
 	outputWG.Wait()
+	_ = ch.CloseWrite()
 	if err == nil {
 		return 0
 	}
@@ -1257,7 +1258,8 @@ func (r *targetSFTPRunner) exchangeInitialSFTPPacket(packet []byte, timeout time
 }
 
 func (r *targetSFTPRunner) close() error {
-	_ = closeWriter(r.stdin)
+	// Abort the channel directly; a preceding half-close can race with handshake
+	// or proxy writes and is unnecessary when terminating the whole channel.
 	return r.channel.Close()
 }
 
