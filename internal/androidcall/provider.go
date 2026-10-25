@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 )
 
 var ErrProviderUnavailable = errors.New("local call provider unavailable")
@@ -42,7 +43,7 @@ func newProvider(environment func() (string, int), identity serviceplugins.Dispa
 		return nil, ErrProviderUnavailable
 	}
 	for _, s := range []string{identity.TargetID, identity.ProviderID, identity.SessionID} {
-		if s == "" || len(s) > 256 || strings.TrimSpace(s) != s || strings.ContainsAny(s, "\x00\r\n") {
+		if s == "" || len(s) > 256 || !utf8.ValidString(s) || strings.TrimSpace(s) != s || strings.ContainsAny(s, "\x00\r\n") {
 			return nil, ErrProviderUnavailable
 		}
 	}

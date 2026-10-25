@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 )
 
 var ErrDispatchDenied = errors.New("local communications dispatch denied")
@@ -106,7 +107,7 @@ func validDispatchBinding(binding DispatchBinding) bool {
 		return false
 	}
 	for _, value := range []string{binding.ActorID, binding.TargetID, binding.ProviderID, binding.SessionID} {
-		if value == "" || len(value) > 256 || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\x00\r\n") {
+		if value == "" || len(value) > 256 || !utf8.ValidString(value) || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\x00\r\n") {
 			return false
 		}
 	}
