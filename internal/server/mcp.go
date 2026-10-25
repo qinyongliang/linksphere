@@ -24,6 +24,11 @@ type mcpActor struct {
 }
 
 func (a *App) mcpHandler() http.Handler {
+	return a.mcpHandlerWithServer(a.newMCPServer)
+}
+
+// Keep request authentication and SDK context propagation on one path.
+func (a *App) mcpHandlerWithServer(newServer func(mcpActor) *mcp.Server) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor, err := a.actorForMCPRequest(r)
 		if err != nil {
@@ -31,7 +36,7 @@ func (a *App) mcpHandler() http.Handler {
 			return
 		}
 		handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-			return a.newMCPServer(actor)
+			return newServer(actor)
 		}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 		// Only the authenticated bearer branch supplies provenance. Cookie and
 		// loopback actors explicitly mask any pre-existing principal on this context.
@@ -39,7 +44,9 @@ func (a *App) mcpHandler() http.Handler {
 		if actor.communications != nil {
 			principal = *actor.communications
 		}
-		r = r.WithContext(context.WithValue(r.Context(), communicationsPrincipalKey{}, principal))
+		requestContext, release := withCommunicationsRequestLifetime(r.Context())
+		defer release()
+		r = r.WithContext(context.WithValue(requestContext, communicationsPrincipalKey{}, principal))
 		handler.ServeHTTP(w, r)
 	})
 }

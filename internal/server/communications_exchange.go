@@ -82,16 +82,12 @@ func (e *communicationsExchange) invoke(ctx context.Context, binding serviceplug
 		<-e.slots
 		return nil, errCommunicationsExchangeDenied
 	}
-	// A late worker retains only the verified principal, never arbitrary HTTP context values.
-	principal.actorID, principal.tokenID = strings.Clone(principal.actorID), strings.Clone(principal.tokenID)
-	base := context.WithValue(context.Background(), communicationsPrincipalKey{}, principal)
-	deadline := time.Now().Add(e.timeout)
-	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
-		deadline = callerDeadline
+	call, cancel, release := communicationsInvocationContext(ctx, principal, e.timeout)
+	defer release()
+	if call.Err() != nil {
+		<-e.slots
+		return nil, call.Err()
 	}
-	call, cancel := context.WithDeadline(base, deadline)
-	stopCaller := context.AfterFunc(ctx, cancel)
-	defer func() { stopCaller(); cancel() }()
 	result := make(chan communicationsExchangeResult, 1)
 	go func() {
 		defer func() { <-e.slots }()
