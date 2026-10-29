@@ -31,9 +31,13 @@ type Client struct {
 	assignedAgentID string
 	instanceID      string
 	bootID          string
+	// Zero uses the production hello budget. Tests can shorten it per client.
+	helloTimeout time.Duration
 }
 
 var errServerRequired = errors.New("server is required")
+
+const agentHelloTimeout = 15 * time.Second
 
 func New(cfg Config) (*Client, error) {
 	var err error
@@ -185,6 +189,16 @@ func (c *Client) runOnce(ctx context.Context) error {
 		case <-done:
 		}
 	}()
+	// The dialer's timeout ends with the HTTP upgrade. A peer can accept that
+	// upgrade and then never finish its application acknowledgement, before
+	// yamux keepalive exists. Bound both hello writes and reads so Run can retry.
+	timeout := c.helloTimeout
+	if timeout <= 0 {
+		timeout = agentHelloTimeout
+	}
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
 	if err := protocol.WriteJSONLine(conn, protocol.AgentHello{
 		ID:              c.id,
 		AssignedAgentID: c.assignedAgentID,
@@ -204,6 +218,11 @@ func (c *Client) runOnce(ctx context.Context) error {
 	}
 	if !resp.OK {
 		return fmt.Errorf("server rejected agent: %s", resp.Error)
+	}
+	// Enrollment is complete. Do not apply its short I/O budget to downloads
+	// or the established, independently monitored yamux session.
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return err
 	}
 	if resp.AssignedAgentID != "" {
 		c.assignedAgentID = resp.AssignedAgentID
