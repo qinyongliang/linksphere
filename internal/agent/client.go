@@ -40,6 +40,9 @@ var errServerRequired = errors.New("server is required")
 const agentHelloTimeout = 15 * time.Second
 
 func New(cfg Config) (*Client, error) {
+	if err := validateRouterRefresh(cfg.AndroidIPv6RouterRefreshInterface); err != nil {
+		return nil, err
+	}
 	var err error
 	cfg, err = configureDesktop(cfg)
 	if err != nil {
@@ -107,6 +110,8 @@ func (c *Client) Run(ctx context.Context) error {
 	} else if restarting {
 		return nil
 	}
+	stopRouterRefresh := startRouterRefresh(ctx, c.cfg.AndroidIPv6RouterRefreshInterface)
+	defer stopRouterRefresh()
 	if _, err := c.forwarder(); err != nil {
 		log.Printf("agent forward cache restore failed; awaiting authoritative sync: %v", err)
 	}
@@ -132,6 +137,9 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func NewEmbedded(cfg Config, id string) (*Client, error) {
+	if err := validateRouterRefresh(cfg.AndroidIPv6RouterRefreshInterface); err != nil {
+		return nil, err
+	}
 	var err error
 	cfg, err = configureDesktop(cfg)
 	if err != nil {

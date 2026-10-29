@@ -16,7 +16,9 @@ type Config struct {
 	DisableAutoUpdate bool
 	// OnConnectionState is an optional local lifecycle observer; no credentials are passed.
 	OnConnectionState func(bool)
-	Desktop           desktop.Config
+	// Optional workaround for Android firmware that loses periodic IPv6 router advertisements.
+	AndroidIPv6RouterRefreshInterface string
+	Desktop                           desktop.Config
 	// DesktopDisabled is an explicit opt-out and wins over platform/environment enables.
 	DesktopDisabled bool
 	Server          string
