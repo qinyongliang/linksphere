@@ -297,6 +297,42 @@ func TestAndroidPermissionStatus(t *testing.T) {
 		t.Fatal("denial reported interactive")
 	}
 }
+
+func TestAndroidAccessibilityFailureStatusKeepsCaptureAndMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"busy", errors.Join(errors.New("private UI diagnostic"), errUIAutomationBusy), androidBusyMessage},
+		{"other", errors.New("private UI diagnostic"), "accessibility probe failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, r := fixture(t)
+			r.fail["uiautomator"] = tc.err
+			result, err := h.Dispatch(context.Background(), "status", contract.Params{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := result.(map[string]any)
+			permissions := status["permissions"].(map[string]any)
+			if status["interactive"] != false || permissions["accessibility"] != false || permissions["screen_capture"] != true {
+				t.Fatalf("incorrect capabilities: %+v", status)
+			}
+			if status["unavailable"] != tc.want {
+				t.Fatalf("unsafe or missing accessibility reason: %v", status["unavailable"])
+			}
+			for _, method := range []string{"screenshot", "list_windows"} {
+				if _, err := h.Dispatch(context.Background(), method, contract.Params{}); err != nil {
+					t.Fatalf("%s unavailable after tree failure: %v", method, err)
+				}
+			}
+			if len(r.inputs()) != 0 {
+				t.Fatal("accessibility failure probe injected input")
+			}
+		})
+	}
+}
 func TestAndroidDumpCleanupOnFailure(t *testing.T) {
 	h, r := fixture(t)
 	r.fail["cat"] = errors.New("read failure")

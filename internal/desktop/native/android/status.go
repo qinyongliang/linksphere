@@ -67,6 +67,11 @@ func (h *Helper) status(ctx context.Context) (any, error) {
 		if w.Focused {
 			_, _, _, err = h.dumpTree(ctx, w.Bounds, w.Package, 1, 1)
 			permissions["accessibility"] = err == nil
+			if errors.Is(err, errUIAutomationBusy) {
+				result["unavailable"] = errUIAutomationBusy.Error()
+			} else if err != nil {
+				result["unavailable"] = "accessibility probe failed"
+			}
 			break
 		}
 	}
