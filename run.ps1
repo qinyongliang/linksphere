@@ -5,9 +5,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repo = if ($env:GOSSHD_REPO) { $env:GOSSHD_REPO } else { "qinyongliang/linksphere" }
-$version = $env:GOSSHD_VERSION
-$proxy = if ($env:GOSSHD_PROXY_URL) { $env:GOSSHD_PROXY_URL } else { "" }
+$repo = if ($env:LINKSPHERE_REPO) { $env:LINKSPHERE_REPO } elseif ($env:GOSSHD_REPO) { $env:GOSSHD_REPO } else { "qinyongliang/linksphere" }
+$version = if ($env:LINKSPHERE_VERSION) { $env:LINKSPHERE_VERSION } else { $env:GOSSHD_VERSION }
+$proxy = if ($env:LINKSPHERE_PROXY_URL) { $env:LINKSPHERE_PROXY_URL } elseif ($env:GOSSHD_PROXY_URL) { $env:GOSSHD_PROXY_URL } else { "" }
 
 if (-not $version) {
   $latest = Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/$repo/releases/latest"

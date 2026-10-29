@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qinyongliang/linksphere/internal/branding"
 	"github.com/qinyongliang/linksphere/internal/protocol"
 	"github.com/qinyongliang/linksphere/internal/relay"
 
@@ -58,10 +59,10 @@ func New(cfg Config) (*Client, error) {
 		cfg.Shell = protocol.DefaultShell()
 	}
 	if cfg.SSHHost == "" {
-		cfg.SSHHost = os.Getenv("GOSSHD_SSH_HOST")
+		cfg.SSHHost = branding.Getenv("SSH_HOST")
 	}
 	if cfg.SSHPort == "" {
-		cfg.SSHPort = os.Getenv("GOSSHD_SSH_PORT")
+		cfg.SSHPort = branding.Getenv("SSH_PORT")
 	}
 	return &Client{cfg: cfg, id: idFile.ID, assignedAgentID: idFile.AssignedAgentID, instanceID: uuid.NewString(), bootID: loadAgentBootID(idFile.ID)}, nil
 }

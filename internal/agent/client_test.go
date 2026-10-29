@@ -78,6 +78,8 @@ func TestSSHAddressDoesNotTreatServerHTTPPortAsSSHPort(t *testing.T) {
 }
 
 func TestSSHAddressUsesEnvironmentHint(t *testing.T) {
+	t.Setenv("LINKSPHERE_SSH_HOST", "")
+	t.Setenv("LINKSPHERE_SSH_PORT", "")
 	t.Setenv("GOSSHD_SSH_HOST", "agent.example.test")
 	t.Setenv("GOSSHD_SSH_PORT", "2222")
 	client, err := New(Config{

@@ -9,12 +9,14 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/qinyongliang/linksphere/internal/branding"
 	"github.com/qinyongliang/linksphere/internal/server"
 )
 
 var version = server.DefaultVersion
 
 func main() {
+	branding.SetUsage(flag.CommandLine, "LinkSphere Server")
 	var cfg server.Config
 	flag.StringVar(&cfg.TunnelSTUNServers, "tunnel-stun-servers", "stun:stun.miwifi.com:3478,stun:stun.chat.bilibili.com:3478,stun:stun.hitv.com:3478,stun:stun.l.google.com:19302,stun:stun.cloudflare.com:3478", "comma-separated STUN URLs for Agent tunnel UDP hole punching; empty enables LAN candidates only")
 	flag.BoolVar(&cfg.ClientMode, "client-mode", false, "run as a local single-user client backend")
@@ -26,7 +28,7 @@ func main() {
 	flag.StringVar(&cfg.AuditRecordingPath, "audit-recording-path", "", "directory for compressed terminal recordings; defaults to audit-recordings next to the main database")
 	flag.StringVar(&cfg.SecretKey, "secret-key", "", "secret key material used to encrypt stored credentials")
 	flag.StringVar(&cfg.SecretKeyPath, "secret-key-path", "", "path to secret key material used to encrypt stored credentials")
-	flag.StringVar(&cfg.BootstrapAdminPassword, "bootstrap-admin-password", "", "password for first-run admin account; falls back to GOSSHD_BOOTSTRAP_ADMIN_PASSWORD or generated")
+	flag.StringVar(&cfg.BootstrapAdminPassword, "bootstrap-admin-password", "", "password for first-run admin account; falls back to LINKSPHERE_BOOTSTRAP_ADMIN_PASSWORD, legacy GOSSHD_BOOTSTRAP_ADMIN_PASSWORD, or generated")
 	flag.StringVar(&cfg.ResetUserPassword, "reset-user-password", "", "reset the password for a user email or ID, print the generated 16-character password, and exit")
 	flag.StringVar(&cfg.SessionCookieName, "session-cookie-name", "", "HTTP session cookie name")
 	flag.StringVar(&cfg.PublicHost, "public-host", "", "public host override used in generated install links; defaults to the request Host")

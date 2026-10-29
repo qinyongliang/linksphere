@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/qinyongliang/linksphere/internal/branding"
 	"github.com/qinyongliang/linksphere/internal/desktop"
 )
 
@@ -40,23 +41,28 @@ func configureDesktop(cfg Config) (Config, error) {
 func desktopConfig(cfg Config, goos string, lookup func(string) (string, bool)) (Config, error) {
 	enabled := cfg.Desktop.Enabled || DesktopEnabledByDefault(goos)
 	disabled := cfg.DesktopDisabled
-	for _, name := range []string{"GOSSHD_DESKTOP_ENABLE", "GOSSHD_DESKTOP_DISABLE"} {
+	if value, name, ok := branding.Lookup(lookup, "DESKTOP_ENABLE"); ok {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return Config{}, fmt.Errorf("%s must be a boolean: %w", name, err)
+		}
+		enabled = parsed
+	}
+	// Either explicit opt-out wins, including a legacy disable paired with a
+	// canonical enable. A rename must never silently grant desktop access.
+	for _, name := range []string{"LINKSPHERE_DESKTOP_DISABLE", "GOSSHD_DESKTOP_DISABLE"} {
 		if value, ok := lookup(name); ok && strings.TrimSpace(value) != "" {
 			parsed, err := strconv.ParseBool(strings.TrimSpace(value))
 			if err != nil {
 				return Config{}, fmt.Errorf("%s must be a boolean: %w", name, err)
 			}
-			if name == "GOSSHD_DESKTOP_DISABLE" {
-				disabled = disabled || parsed
-			} else {
-				enabled = parsed
-			}
+			disabled = disabled || parsed
 		}
 	}
 	cfg.Desktop.Enabled = enabled && !disabled
 	cfg.DesktopDisabled = disabled
 	if cfg.Desktop.HelperPath == "" {
-		value, _ := lookup("GOSSHD_DESKTOP_HELPER")
+		value, _, _ := branding.Lookup(lookup, "DESKTOP_HELPER")
 		cfg.Desktop.HelperPath = strings.TrimSpace(value)
 	}
 	return cfg, nil

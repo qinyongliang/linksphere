@@ -14,6 +14,7 @@ import (
 	"os/signal"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/qinyongliang/linksphere/internal/branding"
 	"github.com/qinyongliang/linksphere/internal/desktop"
 	desktopmcp "github.com/qinyongliang/linksphere/internal/desktop/mcptools"
 )
@@ -21,6 +22,7 @@ import (
 var version = "dev"
 
 func main() {
+	branding.SetUsage(flag.CommandLine, "LinkSphere Desktop MCP")
 	allowRead := flag.Bool("allow-read", false, "explicitly allow reading this user desktop or unlocked Android shell/paired accessibility screen")
 	allowControl := flag.Bool("allow-control", false, "explicitly allow controlling this user desktop or unlocked Android shell/paired accessibility screen (also requires allow-read)")
 	helper := flag.String("desktop-helper", "", "absolute native helper executable path (macOS requires a path unless an adjacent app bundle exists; leave empty on Android)")

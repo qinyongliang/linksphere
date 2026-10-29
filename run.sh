@@ -1,9 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
-repo="${GOSSHD_REPO:-qinyongliang/linksphere}"
-version="${GOSSHD_VERSION:-}"
-proxy="${GOSSHD_PROXY_URL:-}"
+repo="${LINKSPHERE_REPO:-${GOSSHD_REPO:-qinyongliang/linksphere}}"
+version="${LINKSPHERE_VERSION:-${GOSSHD_VERSION:-}}"
+proxy="${LINKSPHERE_PROXY_URL:-${GOSSHD_PROXY_URL:-}}"
 
 if [ -z "$version" ]; then
   latest_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${repo}/releases/latest")"
@@ -36,7 +36,7 @@ platform="${os}-${arch}"
 asset="gosshd-${version}-${platform}.tar.gz"
 url="https://github.com/${repo}/releases/download/${version}/${asset}"
 checksums_url="https://github.com/${repo}/releases/download/${version}/checksums.txt"
-tmp_root="${GOSSHD_TMPDIR:-${TMPDIR:-/tmp}}/gosshd"
+tmp_root="${LINKSPHERE_TMPDIR:-${GOSSHD_TMPDIR:-${TMPDIR:-/tmp}}}/gosshd"
 archive="${tmp_root}/${asset}"
 checksums="${tmp_root}/checksums-${version}.txt"
 extract_dir="${tmp_root}/server-${version}-${platform}-$$"

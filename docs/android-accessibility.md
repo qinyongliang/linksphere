@@ -2,7 +2,7 @@
 
 ## One package, two installation routes
 
-The recommended non-root installation is **gosshd-agent-android.apk** for Android 11 / API 30 or newer, ARM64 and ARMv7. It includes the Go Agent and the optional accessibility backend. Termux, root, Shizuku and a persistent ADB connection are **not** required to run the built-in Agent.
+The recommended non-root installation is **LinkSphere Agent APK** (`gosshd-agent-android.apk`) for Android 11 / API 30 or newer, ARM64 and ARMv7. It includes the Go Agent and the optional accessibility backend. Termux, root, Shizuku and a persistent ADB connection are **not** required to run the built-in Agent.
 
 The foreground service starts the fixed Agent executable installed with the APK, supervises its process with bounded restart backoff, and owns the optional loopback desktop bridge. Commands run as the ordinary application UID inside Android's app sandbox, not as root or the ADB shell user. Installing this APK does not grant full-device filesystem or shell access.
 

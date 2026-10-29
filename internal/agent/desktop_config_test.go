@@ -23,6 +23,11 @@ func TestDesktopDefaultConfiguration(t *testing.T) {
 		{name: "android default", goos: "android"},
 		{name: "explicit opt out", goos: "windows", cfg: Config{DesktopDisabled: true}},
 		{name: "opt out wins explicit enable", goos: "darwin", cfg: Config{DesktopDisabled: true, Desktop: desktop.Config{Enabled: true}}},
+		{name: "canonical enable wins", goos: "linux", env: map[string]string{"LINKSPHERE_DESKTOP_ENABLE": "true", "GOSSHD_DESKTOP_ENABLE": "false"}, enabled: true},
+		{name: "legacy disable still wins", goos: "windows", env: map[string]string{"LINKSPHERE_DESKTOP_ENABLE": "true", "LINKSPHERE_DESKTOP_DISABLE": "false", "GOSSHD_DESKTOP_DISABLE": "true"}},
+		{name: "canonical disable wins", goos: "windows", env: map[string]string{"LINKSPHERE_DESKTOP_DISABLE": "true", "GOSSHD_DESKTOP_DISABLE": "false"}},
+		{name: "canonical helper wins", goos: "darwin", env: map[string]string{"LINKSPHERE_DESKTOP_HELPER": " /Applications/New.app/helper ", "GOSSHD_DESKTOP_HELPER": "/Applications/Old.app/helper"}, enabled: true, helper: "/Applications/New.app/helper"},
+		{name: "invalid canonical enable rejected", goos: "windows", env: map[string]string{"LINKSPHERE_DESKTOP_ENABLE": "invalid", "GOSSHD_DESKTOP_ENABLE": "true"}, wantError: true},
 		{name: "legacy environment off", goos: "windows", env: map[string]string{"GOSSHD_DESKTOP_ENABLE": "0"}},
 		{name: "legacy environment on", goos: "darwin", env: map[string]string{"GOSSHD_DESKTOP_ENABLE": "1"}, enabled: true},
 		{name: "environment opt out", goos: "darwin", env: map[string]string{"GOSSHD_DESKTOP_DISABLE": "true"}},
@@ -52,6 +57,9 @@ func TestDesktopDefaultConfiguration(t *testing.T) {
 func TestDesktopDefaultsAppliedByBothAgentConstructors(t *testing.T) {
 	for _, disabled := range []bool{false, true} {
 		t.Run(map[bool]string{false: "default", true: "opt out"}[disabled], func(t *testing.T) {
+			t.Setenv("LINKSPHERE_DESKTOP_ENABLE", "")
+			t.Setenv("LINKSPHERE_DESKTOP_DISABLE", "")
+			t.Setenv("LINKSPHERE_DESKTOP_HELPER", "")
 			t.Setenv("GOSSHD_DESKTOP_ENABLE", "")
 			t.Setenv("GOSSHD_DESKTOP_DISABLE", "")
 			t.Setenv("GOSSHD_DESKTOP_HELPER", "")

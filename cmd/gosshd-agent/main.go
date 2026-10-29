@@ -7,11 +7,13 @@ import (
 	"runtime"
 
 	"github.com/qinyongliang/linksphere/internal/agent"
+	"github.com/qinyongliang/linksphere/internal/branding"
 )
 
 var version = "dev"
 
 func parseAgentFlags(flags *flag.FlagSet, args []string) (agent.Config, error) {
+	branding.SetUsage(flags, "LinkSphere Agent")
 	var cfg agent.Config
 	cfg.Version = version
 	flags.StringVar(&cfg.Server, "server", "", "public LinkSphere server URL (required)")

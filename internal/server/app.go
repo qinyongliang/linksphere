@@ -18,6 +18,7 @@ import (
 
 	"github.com/qinyongliang/linksphere/internal/auth"
 	"github.com/qinyongliang/linksphere/internal/bastion"
+	"github.com/qinyongliang/linksphere/internal/branding"
 	"github.com/qinyongliang/linksphere/internal/desktop"
 	"github.com/qinyongliang/linksphere/internal/store"
 )
@@ -143,7 +144,7 @@ func (a *App) ensureServices(ctx context.Context) error {
 	}
 	password := strings.TrimSpace(a.cfg.BootstrapAdminPassword)
 	if password == "" {
-		password = strings.TrimSpace(os.Getenv("GOSSHD_BOOTSTRAP_ADMIN_PASSWORD"))
+		password = strings.TrimSpace(branding.Getenv("BOOTSTRAP_ADMIN_PASSWORD"))
 	}
 	if admin, createdPassword, err := st.Repository().EnsureBootstrapAdmin(ctx, password); err != nil {
 		return err
@@ -228,7 +229,11 @@ func (a *App) loadSecretKey() ([]byte, error) {
 		}
 		return []byte(strings.TrimSpace(string(key))), nil
 	}
-	if key := strings.TrimSpace(os.Getenv("GOSSHD_SECRET_KEY")); key != "" {
+	keyEnv, err := branding.ConsistentValue(os.LookupEnv, "SECRET_KEY")
+	if err != nil {
+		return nil, err
+	}
+	if key := strings.TrimSpace(keyEnv); key != "" {
 		return []byte(key), nil
 	}
 	base := strings.TrimSpace(a.cfg.DatabasePath)
