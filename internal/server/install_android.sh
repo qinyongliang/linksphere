@@ -40,7 +40,7 @@ if [ "$os" = android ]; then
       if [ -n "$abi" ]; then arch="$abi"; fi
     fi
     if [ "$mode" = install ]; then
-      for utility in nohup readlink; do
+      for utility in nohup readlink xargs; do
         command -v "$utility" >/dev/null 2>&1 || { echo "Root Android background installation requires $utility (toybox or BusyBox)." >&2; exit 1; }
       done
     fi
@@ -162,28 +162,32 @@ running() {
   esac
   # A binary handover can relocate the old image before the controller stops
   # it. Only accept that image when argv still identifies this installation.
-  args="$(tr '\000' '\n' < "/proc/$pid/cmdline" 2>/dev/null)" || return 1
-  first=true
-  expect_id=false
-  owns_id=false
-  while IFS= read -r arg; do
-    if [ "$first" = true ]; then
-      [ "$arg" = "$dir/gosshd-agent" ] || return 1
-      first=false
-    elif [ "$expect_id" = true ]; then
-      owns_id=false
-      [ "$arg" != "$dir/agent.json" ] || owns_id=true
-      expect_id=false
-    else
-      case "$arg" in
-        --id-file) expect_id=true; owns_id=false ;;
-        --id-file=*) owns_id=false; [ "$arg" != "--id-file=$dir/agent.json" ] || owns_id=true ;;
+  xargs -0 sh -c '
+    dir=$1; shift
+    [ "$#" -gt 0 ] && [ "$1" = "$dir/gosshd-agent" ] || exit 1
+    shift
+    owns_id=false
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --id-file|-id-file)
+          [ "$#" -ge 2 ] || exit 1
+          owns_id=false; [ "$2" != "$dir/agent.json" ] || owns_id=true
+          shift 2 ;;
+        --id-file=*|-id-file=*)
+          owns_id=false; [ "${1#*=}" != "$dir/agent.json" ] || owns_id=true
+          shift ;;
+        --server|-server|--enrollment-token|-enrollment-token|--shell|-shell|--root|-root|--ssh-host|-ssh-host|--ssh-port|-ssh-port|--desktop-helper|-desktop-helper|--android-backend|-android-backend|--android-bridge-token-file|-android-bridge-token-file|--android-ipv6-router-refresh-interface|-android-ipv6-router-refresh-interface)
+          [ "$#" -ge 2 ] || exit 1
+          shift 2 ;;
+        --desktop-enable|-desktop-enable|--desktop-disable|-desktop-disable|--desktop-enable=*|-desktop-enable=*|--desktop-disable=*|-desktop-disable=*) shift ;;
+        --server=*|-server=*|--enrollment-token=*|-enrollment-token=*|--shell=*|-shell=*|--root=*|-root=*|--ssh-host=*|-ssh-host=*|--ssh-port=*|-ssh-port=*|--desktop-helper=*|-desktop-helper=*|--android-backend=*|-android-backend=*|--android-bridge-token-file=*|-android-bridge-token-file=*|--android-ipv6-router-refresh-interface=*|-android-ipv6-router-refresh-interface=*) shift ;;
+        --) break ;;
+        -*) exit 1 ;;
+        *) break ;;
       esac
-    fi
-  done <<ARGS
-$args
-ARGS
-  [ "$owns_id" = true ]
+    done
+    [ "$owns_id" = true ]
+  ' linksphere-process-check "$dir" < "/proc/$pid/cmdline" 2>/dev/null
 }
 case "${1:-start}" in
   start)

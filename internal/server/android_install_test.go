@@ -20,7 +20,8 @@ import (
 // The copied test executable is the mock downloaded agent. Unlike a shell
 // fixture, its /proc/PID/exe identity exercises the root controller faithfully.
 func init() {
-	if os.Getenv("GOSSHD_TEST_ANDROID_AGENT") != "1" || filepath.Base(os.Args[0]) != "gosshd-agent" {
+	image, _ := os.Executable()
+	if os.Getenv("GOSSHD_TEST_ANDROID_AGENT") != "1" || filepath.Base(image) != "gosshd-agent" {
 		return
 	}
 	record, _ := json.Marshal(struct {
@@ -63,7 +64,7 @@ func newAndroidInstallFixture(t *testing.T, termux bool, abi string) *androidIns
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"sh", "sleep", "cp", "mkdir", "chmod", "mktemp", "tr", "sha256sum", "sed", "mv", "rm", "cat", "readlink", "nohup", "awk"} {
+	for _, name := range []string{"sh", "sleep", "cp", "mkdir", "chmod", "mktemp", "tr", "sha256sum", "sed", "mv", "rm", "cat", "readlink", "nohup", "awk", "xargs"} {
 		tool, err := exec.LookPath(name)
 		if err != nil {
 			t.Fatal(err)
@@ -336,20 +337,37 @@ func TestAndroidControllerRecognizesRenamedOwnedExecutable(t *testing.T) {
 	}
 	// Even a relocated image under this directory must not authorize stopping
 	// a different instance whose command line selects another identity file.
-	unrelated := exec.Command(filepath.Join(saved, "gosshd-agent"), "--id-file", filepath.Join(f.agentDir, "other.json"))
-	unrelated.Args[0] = filepath.Join(f.agentDir, "gosshd-agent")
-	unrelated.Env = append(append([]string{}, f.env...), "GOSSHD_TEST_AGENT_WAIT=1")
-	if err := unrelated.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = unrelated.Process.Kill(); _ = unrelated.Wait() })
-	if err := os.WriteFile(filepath.Join(f.agentDir, "agent.pid"), []byte(strconv.Itoa(unrelated.Process.Pid)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	status := exec.Command(controller, "status")
-	status.Env = f.env
-	if out, err := status.CombinedOutput(); err == nil {
-		t.Fatalf("different identity authorized a running Agent: %s", out)
+	for _, test := range []struct {
+		name, argv0 string
+		args        []string
+		want        bool
+	}{
+		{"different identity", filepath.Join(f.agentDir, "gosshd-agent"), []string{"--id-file", filepath.Join(f.agentDir, "other.json")}, false},
+		{"newline value", filepath.Join(f.agentDir, "gosshd-agent"), []string{"--id-file", filepath.Join(f.agentDir, "other.json"), "--root", "/example\n--id-file\n" + filepath.Join(f.agentDir, "agent.json")}, false},
+		{"newline argv0", filepath.Join(f.agentDir, "gosshd-agent") + "\nextra", []string{"--id-file", filepath.Join(f.agentDir, "agent.json")}, false},
+		{"flag-shaped value", filepath.Join(f.agentDir, "gosshd-agent"), []string{"--id-file", filepath.Join(f.agentDir, "other.json"), "--root", "--id-file=" + filepath.Join(f.agentDir, "agent.json")}, false},
+		{"after double dash", filepath.Join(f.agentDir, "gosshd-agent"), []string{"--id-file", filepath.Join(f.agentDir, "other.json"), "--", "--id-file", filepath.Join(f.agentDir, "agent.json")}, false},
+		{"last identity wins", filepath.Join(f.agentDir, "gosshd-agent"), []string{"--id-file", filepath.Join(f.agentDir, "agent.json"), "--id-file", filepath.Join(f.agentDir, "other.json")}, false},
+		{"equals identity", filepath.Join(f.agentDir, "gosshd-agent"), []string{"--id-file=" + filepath.Join(f.agentDir, "agent.json")}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			process := exec.Command(filepath.Join(saved, "gosshd-agent"), test.args...)
+			process.Args[0] = test.argv0
+			process.Env = append(append([]string{}, f.env...), "GOSSHD_TEST_AGENT_WAIT=1")
+			if err := process.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = process.Process.Kill(); _ = process.Wait() }()
+			if err := os.WriteFile(filepath.Join(f.agentDir, "agent.pid"), []byte(strconv.Itoa(process.Process.Pid)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			status := exec.Command(controller, "status")
+			status.Env = f.env
+			out, err := status.CombinedOutput()
+			if (err == nil) != test.want {
+				t.Fatalf("owned=%v want%v: %s", err == nil, test.want, out)
+			}
+		})
 	}
 	if err := os.WriteFile(filepath.Join(f.agentDir, "agent.pid"), pid, 0o600); err != nil {
 		t.Fatal(err)
