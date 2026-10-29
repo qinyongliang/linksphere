@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qinyongliang/linksphere/internal/store"
 )
@@ -35,5 +36,51 @@ func TestMCPSessionOfflineAgentPreservesCallerCancellation(t *testing.T) {
 	cancel()
 	if session, err := app.createMCPSession(ctx, user, target.ID); session != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("caller cancellation replaced by offline state: session=%v error=%v", session, err)
+	}
+}
+
+func TestMCPSessionCallerCancellationDuringShellClose(t *testing.T) {
+	app, user, target := mcpSessionFixture(t)
+	fakeMCPShellAgent(t, app, target.AgentID, "no-prompt")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := app.createMCPSession(ctx, user, target.ID)
+		result <- err
+	}()
+	var session *terminalSession
+	deadline := time.After(time.Second)
+	for session == nil {
+		app.terminalSessions.mu.Lock()
+		for _, candidate := range app.terminalSessions.sessions {
+			session = candidate
+		}
+		app.terminalSessions.mu.Unlock()
+		if session == nil {
+			select {
+			case err := <-result:
+				t.Fatalf("startup finished before cancellation: %v", err)
+			case <-deadline:
+				t.Fatal("startup session missing")
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
+	// Hold the readiness lock beyond its polling interval, then let closure and
+	// caller cancellation become observable together at the startup boundary.
+	session.mu.Lock()
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	session.closeLocked("")
+	session.cancel()
+	session.mu.Unlock()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("concurrent shell closure masked caller cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled startup did not finish")
 	}
 }

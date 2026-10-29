@@ -124,7 +124,10 @@ func (a *App) createMCPSession(ctx context.Context, actor store.User, targetID s
 		// A failed Agent transport closes the shell startup waiter too. Preserve
 		// the connection failure instead of suggesting its prompt hook is broken.
 		// Caller cancellation still takes precedence over a concurrent disconnect.
-		if ctx.Err() == nil && target.TargetType == store.TargetAgent && a.registry != nil {
+		if callerErr := ctx.Err(); callerErr != nil {
+			return nil, fmt.Errorf("terminal shell integration startup: %w", callerErr)
+		}
+		if target.TargetType == store.TargetAgent && a.registry != nil {
 			if _, connectionErr := a.registry.Get(target.AgentID); errors.Is(connectionErr, ErrAgentOffline) {
 				return nil, fmt.Errorf("terminal startup failed: %w", connectionErr)
 			}
