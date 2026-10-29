@@ -98,6 +98,11 @@ func TestAgentBashDirectoryIntegrationReportsInitialHomeAndCD(t *testing.T) {
 			}
 			output.Write(frame.Data)
 		}
+		capability := strings.LastIndex(output.String(), "\x1b]633;P;GosshdBashSource=1\a")
+		directory := strings.LastIndex(output.String(), "\x1b]633;P;Cwd=")
+		if capability < 0 || directory < capability {
+			t.Fatalf("prompt cwd preceded Bash multiline capability: %q", output.String())
+		}
 	}
 	waitDirectory(root)
 	if err := protocol.WriteFrame(clientConn, protocol.Frame{Type: protocol.FrameStdin, Data: []byte("cd 'work;中文'\r")}); err != nil {

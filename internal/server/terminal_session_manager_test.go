@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/qinyongliang/linksphere/internal/protocol"
 	"github.com/qinyongliang/linksphere/internal/store"
 )
@@ -93,6 +96,191 @@ func TestTerminalLegacyWindowsStatusIsExplicitlyUnsupported(t *testing.T) {
 		t.Fatalf("POSIX terminal was blocked: %v", err)
 	}
 }
+
+func TestTerminalFramedMultilineCommandPreservesPayload(t *testing.T) {
+	inputRead, inputWrite := io.Pipe()
+	defer inputRead.Close()
+	defer inputWrite.Close()
+	session := &terminalSession{ctx: context.Background()}
+	session.setAgentCommandStatus(true, true)
+	session.setAgentInput(inputWrite)
+	command := "echo first\r\necho second"
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan terminalCommandAttempt, 1)
+	go func() { done <- session.trySendCommand(ctx, command) }()
+	frame, err := protocol.ReadFrame(inputRead)
+	if err != nil || frame.Type != protocol.FrameCommand {
+		t.Fatalf("framed multiline command: %+v, %v", frame, err)
+	}
+	var payload protocol.ShellCommand
+	if err := json.Unmarshal(frame.Data, &payload); err != nil || payload.Command != command || payload.ID == "" {
+		t.Fatalf("framed payload changed: %+v, %v", payload, err)
+	}
+	completion, _ := json.Marshal(protocol.ShellCommandResult{ID: payload.ID, ExitCode: 7})
+	session.completeAgentCommand(completion)
+	if result := <-done; result.Err != nil || !result.Sent || result.Result.ExitCode != 7 {
+		t.Fatalf("framed multiline completion: %+v", result)
+	}
+}
+
+func TestTerminalMultilinePolicyAndAuditUseOriginalCommand(t *testing.T) {
+	app, user, target := mcpSessionFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	reviewed := make(chan string, 1)
+	reviewer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct{ Content string } `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Messages) < 2 {
+			t.Errorf("invalid review request: %+v, %v", body, err)
+			http.Error(w, "invalid review request", http.StatusBadRequest)
+			return
+		}
+		content := body.Messages[1].Content
+		var request struct{ Command string }
+		start := strings.IndexByte(content, '{')
+		if start < 0 || json.Unmarshal([]byte(content[start:]), &request) != nil {
+			t.Errorf("invalid review content: %q", content)
+		}
+		reviewed <- request.Command
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `{"allow":true}`}}}})
+	}))
+	defer reviewer.Close()
+	repo := app.store.Repository()
+	config, err := repo.CreateLLMPolicyConfig(ctx, store.CreateLLMPolicyConfigParams{OwnerType: target.OwnerType, OwnerID: target.OwnerID, Name: "multiline-review", BaseURL: reviewer.URL, Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := repo.CreateCommandPolicy(ctx, store.CreateCommandPolicyParams{OwnerType: target.OwnerType, OwnerID: target.OwnerID, Name: "multiline-review", DefaultAction: store.DecisionAllow, LLMConfigID: config.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AttachPolicyToTarget(ctx, policy.ID, target.ID); err != nil {
+		t.Fatal(err)
+	}
+	session := app.terminalSessions.create("multiline-review", user.ID, target, "", 80, 24, nil)
+	defer session.close("")
+	input := &terminalRouteTestInput{session: session, output: "reviewed\r\n"}
+	session.input = input
+	session.writeOutput("output", []byte("\x1b]633;P;GosshdBashSource=1\a"))
+	command := "printf '%s' first\r\nprintf '%s' second"
+	result, err := mcpSessionTestClient(t, app, user).CallTool(ctx, &mcp.CallToolParams{Name: "session_send_command", Arguments: map[string]any{"session_id": session.id, "command": command}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output mcpSessionCommandOutput
+	decodeMCPSessionResult(t, result, &output)
+	if !output.Allowed || output.ExitCode != 0 || !strings.HasPrefix(input.input.String(), " builtin source <(builtin printf '%s' '") {
+		t.Fatalf("reviewed multiline did not reach Bash: %+v, input=%q", output, input.input.String())
+	}
+	select {
+	case got := <-reviewed:
+		if got != command {
+			t.Fatalf("policy reviewed transport syntax instead of original command: %q", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("multiline command bypassed AI review")
+	}
+	logs, err := app.audit.Repository().ListCommandAuditLogs(ctx, store.AuditLogFilter{UserID: user.ID, TargetID: target.ID})
+	if err != nil || len(logs.Logs) != 1 || logs.Logs[0].Command != command {
+		t.Fatalf("audit did not preserve original multiline command: %+v, %v", logs, err)
+	}
+}
+
+func TestTerminalMultilineRequiresAdvertisedBashBeforeWritingInput(t *testing.T) {
+	for _, command := range []string{"echo first\necho second", "echo first\r\necho second", "echo first\recho second"} {
+		t.Run(fmt.Sprintf("%q", command), func(t *testing.T) {
+			var input bytes.Buffer
+			session := &terminalSession{ctx: context.Background(), input: &input}
+			result := session.trySendCommand(context.Background(), command)
+			if !result.Acquired || result.Sent || result.Err == nil || !strings.Contains(result.Err.Error(), "bundled Bash") {
+				t.Fatalf("unadvertised multiline command was accepted: %+v", result)
+			}
+			if input.Len() != 0 {
+				t.Fatalf("unsupported multiline wrote shell input: %q", input.String())
+			}
+		})
+	}
+}
+
+func TestTerminalBashMultilineCapabilityIsPromptScoped(t *testing.T) {
+	var input bytes.Buffer
+	session := &terminalSession{ctx: context.Background(), input: &input, managed: true, clients: map[*terminalWSWriter]bool{}, screen: newTerminalScreenBuffer(24)}
+	session.writeOutput("output", []byte("\x1b]633;A\a\x1b]633;P;GosshdBashSource=1\a\x1b]633;P;Cwd=/example\a"))
+	if !session.bashSourceSupported || session.commandReadinessError() != nil {
+		t.Fatal("bundled Bash capability did not precede readiness")
+	}
+	session.writeOutput("output", []byte("\x1b]633;C\a"))
+	if session.bashSourceSupported {
+		t.Fatal("a shell-changing command retained the previous Bash capability")
+	}
+	// A replacement shell can still report prompt/cwd without the Bash capability.
+	session.writeOutput("output", []byte("\x1b]633;D;0\a\x1b]633;A\a\x1b]633;P;Shell=fish\a\x1b]633;P;Cwd=/example\a"))
+	if err := session.commandReadinessError(); err != nil {
+		t.Fatalf("replacement shell should remain usable for single lines: %v", err)
+	}
+	result := session.trySendCommand(context.Background(), ":\necho later")
+	if result.Err == nil || result.Sent || input.Len() != 0 {
+		t.Fatalf("replacement shell inherited Bash multiline support: %+v, input=%q", result, input.String())
+	}
+	for _, payload := range []string{"P;GosshdBashSource=0", "P;GosshdBashSource=1;other", "P;GosshdBashEval=1", "P;Shell=bash"} {
+		session.writeOutput("output", []byte("\x1b]633;"+payload+"\a"))
+		if session.bashSourceSupported {
+			t.Fatalf("non-capability metadata %q enabled Bash sourcing", payload)
+		}
+	}
+}
+
+func TestManagedQueuedMultilineWaitsForRefreshedBashCapability(t *testing.T) {
+	manager := newTerminalSessionManager()
+	session := manager.createSession("managed", "user", store.SSHTarget{ID: "target"}, "", 80, 24, nil, true)
+	defer session.close("")
+	input := make(chan string, 2)
+	session.input = terminalInputFunc(func(data []byte) (int, error) { input <- string(data); return len(data), nil })
+	session.writeOutput("output", []byte("\x1b]633;A\a\x1b]633;P;GosshdBashSource=1\a\x1b]633;P;Cwd=/old\a"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	first := make(chan error, 1)
+	go func() { _, err := session.sendCommand(ctx, ":"); first <- err }()
+	select {
+	case <-input:
+	case <-ctx.Done():
+		t.Fatal("first command was not sent")
+	}
+	session.writeOutput("output", []byte("\x1b]633;C\a\x1b]633;D;0\a\x1b]633;A\a"))
+	second := make(chan error, 1)
+	go func() { _, err := session.sendCommand(ctx, ":\necho queued"); second <- err }()
+	for _, metadata := range []string{"", "\x1b]633;P;GosshdBash", "Source=1\a"} {
+		session.writeOutput("output", []byte(metadata))
+		select {
+		case data := <-input:
+			t.Fatalf("queued command preceded complete prompt metadata: %q", data)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	session.writeOutput("output", []byte("\x1b]633;P;Cwd=/new\a"))
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case data := <-input:
+		if !strings.HasPrefix(data, " builtin source <(builtin printf '%s' '") || !strings.Contains(data, ":\necho queued") {
+			t.Fatalf("multiline did not use one Bash invocation: %q", data)
+		}
+	case <-ctx.Done():
+		t.Fatal("queued command was not sent after prompt metadata")
+	}
+	session.writeOutput("output", []byte("\x1b]633;C\a\x1b]633;D;0\a\x1b]633;A\a\x1b]633;P;GosshdBashSource=1\a\x1b]633;P;Cwd=/new\a"))
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+}
+
+type terminalInputFunc func([]byte) (int, error)
+
+func (f terminalInputFunc) Write(data []byte) (int, error) { return f(data) }
 
 func TestTerminalIntegrationParsesSplitOSCSequence(t *testing.T) {
 	session := &terminalSession{
@@ -273,6 +461,11 @@ func TestBashShellIntegrationCommandInstallsHooks(t *testing.T) {
 	}
 	if !strings.Contains(script, "export -n PROMPT_COMMAND") {
 		t.Fatalf("script should not export the prompt hook to tmux child shells: %q", script)
+	}
+	capability := strings.Index(script, "printf '\\033]633;P;GosshdBashSource=1\\007'")
+	directory := strings.Index(script, "printf '\\033]633;P;Cwd=%s\\007'")
+	if capability < 0 || directory < capability {
+		t.Fatal("SSH Bash hook must advertise multiline capability before cwd readiness")
 	}
 }
 

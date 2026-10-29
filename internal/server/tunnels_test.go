@@ -161,7 +161,7 @@ func TestTunnelRelayStopAndStatistics(t *testing.T) {
 		t.Fatal("traffic entered main database")
 	}
 }
-func attachTunnelAgent(t *testing.T, app *App, id string) func() {
+func attachTunnelAgent(t *testing.T, app *App, id string, overrides ...agent.Config) func() {
 	t.Helper()
 	a, b := net.Pipe()
 	server, err := yamux.Server(a, nil)
@@ -172,7 +172,14 @@ func attachTunnelAgent(t *testing.T, app *App, id string) func() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	embedded, err := agent.NewEmbedded(agent.Config{Root: t.TempDir()}, id)
+	config := agent.Config{}
+	if len(overrides) > 0 {
+		config = overrides[0]
+	}
+	if config.Root == "" {
+		config.Root = t.TempDir()
+	}
+	embedded, err := agent.NewEmbedded(config, id)
 	if err != nil {
 		t.Fatal(err)
 	}

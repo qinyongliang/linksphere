@@ -96,6 +96,7 @@ type terminalSession struct {
 	activeCommands         int
 	agentCommandStatus     bool
 	agentStatusUnsupported bool
+	bashSourceSupported    bool
 }
 
 type terminalScreenBuffer struct {
@@ -457,10 +458,11 @@ type terminalCommandWaiter struct {
 }
 
 type terminalIntegrationEvent struct {
-	Kind      string
-	ID        string
-	ExitCode  int
-	Directory string
+	Kind       string
+	ID         string
+	ExitCode   int
+	Directory  string
+	BashSource bool
 }
 
 func bashShellIntegrationCommand() string {
@@ -478,6 +480,10 @@ case ":$HISTCONTROL:" in
   *:ignorespace:*|*:ignoreboth:*) ;;
   *) HISTCONTROL="${HISTCONTROL:+$HISTCONTROL:}ignorespace"; export HISTCONTROL ;;
 esac
+__gosshd_bash_source_supported=0
+if { builtin source <(builtin printf ':'); } >/dev/null 2>&1; then
+  __gosshd_bash_source_supported=1
+fi
 __gosshd_command_running=0
 __gosshd_original_prompt_command=${PROMPT_COMMAND-}
 __gosshd_preexec() {
@@ -496,6 +502,9 @@ __gosshd_precmd() {
   printf '\033]633;A\007'
   if [ -n "$__gosshd_original_prompt_command" ]; then
     eval "$__gosshd_original_prompt_command"
+  fi
+  if [ "$__gosshd_bash_source_supported" = 1 ]; then
+    printf '\033]633;P;GosshdBashSource=1\007'
   fi
   case "$PWD" in
     *$'\e'*|*$'\a'*|*$'\r'*|*$'\n'*) ;;
@@ -583,9 +592,17 @@ func (s *terminalSession) trySendCommandLocked(ctx context.Context, command stri
 		return terminalCommandResult{}, false, err
 	}
 	s.mu.Lock()
+	terminalCommand := command
 	if s.agentCommandStatus {
 		waiter.id = uuid.NewString()
 		waiter.framed = true
+	} else {
+		var err error
+		terminalCommand, err = unframedTerminalCommand(command, s.bashSourceSupported)
+		if err != nil {
+			s.mu.Unlock()
+			return terminalCommandResult{ExitCode: 255}, false, err
+		}
 	}
 	s.commandWaiters = append(s.commandWaiters, waiter)
 	input := s.input
@@ -599,7 +616,7 @@ func (s *terminalSession) trySendCommandLocked(ctx context.Context, command stri
 			sendErr = errors.New("session command transport unavailable")
 		}
 	} else {
-		sendErr = s.writeInput(historySuppressedTerminalCommand(command) + "\r")
+		sendErr = s.writeInput(historySuppressedTerminalCommand(terminalCommand) + "\r")
 	}
 	if sendErr != nil {
 		return terminalCommandResult{ExitCode: 255}, false, sendErr
@@ -618,6 +635,20 @@ func (s *terminalSession) trySendCommandLocked(ctx context.Context, command stri
 		}
 	}
 	return result, true, err
+}
+
+func unframedTerminalCommand(command string, bashSourceSupported bool) (string, error) {
+	if !strings.ContainsAny(command, "\r\n") {
+		return command, nil
+	}
+	if !bashSourceSupported {
+		return "", errors.New("multiline commands require the bundled Bash shell integration; update the Agent or open a new Bash session")
+	}
+	// Keep the complete command in one interactive shell invocation. Literal
+	// newlines inside the quoted argument use Bash's continuation prompt, so a
+	// physical line cannot report completion before the remaining lines execute.
+	command = strings.ReplaceAll(strings.ReplaceAll(command, "\r\n", "\n"), "\r", "\n")
+	return "builtin source <(builtin printf '%s' '" + strings.ReplaceAll(command, "'", "'\\''") + "')", nil
 }
 
 func historySuppressedTerminalCommand(command string) string {
@@ -746,12 +777,14 @@ func (s *terminalSession) writeOutput(typ string, data []byte) {
 	for _, event := range events {
 		switch event.Kind {
 		case "C":
+			s.bashSourceSupported = false
 			s.shellBusy = true
 			s.directoryPending = true
 			if s.managed {
 				s.promptReady = false
 			}
 		case "A":
+			s.bashSourceSupported = false
 			s.promptSeen = true
 			s.promptReady = !s.managed
 			s.shellBusy = false
@@ -763,6 +796,9 @@ func (s *terminalSession) writeOutput(typ string, data []byte) {
 				s.promptReady = false
 			}
 		case "P":
+			if event.BashSource {
+				s.bashSourceSupported = true
+			}
 			if event.Directory != "" {
 				s.directoryPending = false
 				if s.managed {
@@ -898,6 +934,9 @@ func terminalOSCSequenceEnd(input string) (int, int) {
 }
 
 func parseTerminalIntegrationEvent(payload string) (terminalIntegrationEvent, bool) {
+	if payload == "P;GosshdBashSource=1" {
+		return terminalIntegrationEvent{Kind: "P", BashSource: true}, true
+	}
 	if directory, ok := strings.CutPrefix(payload, "P;Cwd="); ok {
 		if strings.ContainsAny(directory, "\x00\x1b\a\r\n") {
 			directory = ""

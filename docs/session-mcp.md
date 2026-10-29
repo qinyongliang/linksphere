@@ -25,6 +25,16 @@ collaboration remains available. Target visibility, terminal policies, command
 review and audit still apply. A shell backend must support LinkSphere's terminal
 integration; failed or timed-out startup does not return a usable session.
 
+Multiline Unix commands require the bundled Bash integration and keep the same
+working directory and exported variables as other session commands. If that
+integration is unavailable, update the Agent or open a new Bash session before
+sending a multiline command.
+
+These multiline commands run as a sourced Bash script with terminal stdin still
+available. `BASH_SOURCE` and `LINENO` describe that script, a top-level `return`
+ends that command, and process substitution can update `$!`. The persistent
+working-directory and environment contract remains the same.
+
 ## Portable text-file tools
 
 These tools use SFTP through the session's SSH or Agent target on supported

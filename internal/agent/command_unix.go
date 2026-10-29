@@ -132,6 +132,10 @@ fi
 if [ -r "$HOME/.bashrc" ]; then
   . "$HOME/.bashrc"
 fi
+__gosshd_bash_source_supported=0
+if { builtin source <(builtin printf ':'); } >/dev/null 2>&1; then
+  __gosshd_bash_source_supported=1
+fi
 __gosshd_command_running=0
 __gosshd_original_prompt_command=${PROMPT_COMMAND-}
 __gosshd_preexec() {
@@ -150,6 +154,9 @@ __gosshd_precmd() {
   printf '\033]633;A\007'
   if [ -n "$__gosshd_original_prompt_command" ]; then
     eval "$__gosshd_original_prompt_command"
+  fi
+  if [ "$__gosshd_bash_source_supported" = 1 ]; then
+    printf '\033]633;P;GosshdBashSource=1\007'
   fi
   case "$PWD" in
     *$'\e'*|*$'\a'*|*$'\r'*|*$'\n'*) ;;
