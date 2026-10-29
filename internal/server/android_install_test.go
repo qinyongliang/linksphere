@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -300,6 +301,73 @@ func TestAndroidInstallerRootServiceBootAndReinstall(t *testing.T) {
 				t.Fatalf("stopped status: %v %s", err, out)
 			}
 		})
+	}
+}
+
+func TestAndroidControllerRecognizesRenamedOwnedExecutable(t *testing.T) {
+	f := newAndroidInstallFixture(t, false, "arm64-v8a")
+	controller := filepath.Join(f.agentDir, "control.sh")
+	t.Cleanup(func() { cmd := exec.Command(controller, "stop"); cmd.Env = f.env; _ = cmd.Run() })
+	if out, err := f.run("install", "GOSSHD_TEST_AGENT_WAIT=1"); err != nil {
+		t.Fatalf("install: %v %s", err, out)
+	}
+	pid, err := os.ReadFile(filepath.Join(f.agentDir, "agent.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownedPID, err := strconv.Atoi(strings.TrimSpace(string(pid)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// The red regression cannot rely on the broken controller for cleanup.
+		if image, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", ownedPID)); strings.HasPrefix(image, f.agentDir+string(filepath.Separator)) {
+			if process, err := os.FindProcess(ownedPID); err == nil {
+				_ = process.Kill()
+			}
+		}
+	})
+	saved := filepath.Join(f.agentDir, "saved")
+	if err := os.Mkdir(saved, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(f.agentDir, "gosshd-agent"), filepath.Join(saved, "gosshd-agent")); err != nil {
+		t.Fatal(err)
+	}
+	// Even a relocated image under this directory must not authorize stopping
+	// a different instance whose command line selects another identity file.
+	unrelated := exec.Command(filepath.Join(saved, "gosshd-agent"), "--id-file", filepath.Join(f.agentDir, "other.json"))
+	unrelated.Args[0] = filepath.Join(f.agentDir, "gosshd-agent")
+	unrelated.Env = append(append([]string{}, f.env...), "GOSSHD_TEST_AGENT_WAIT=1")
+	if err := unrelated.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unrelated.Process.Kill(); _ = unrelated.Wait() })
+	if err := os.WriteFile(filepath.Join(f.agentDir, "agent.pid"), []byte(strconv.Itoa(unrelated.Process.Pid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status := exec.Command(controller, "status")
+	status.Env = f.env
+	if out, err := status.CombinedOutput(); err == nil {
+		t.Fatalf("different identity authorized a running Agent: %s", out)
+	}
+	if err := os.WriteFile(filepath.Join(f.agentDir, "agent.pid"), pid, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"status", "start"} {
+		cmd := exec.Command(controller, action)
+		cmd.Env = f.env
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s lost the renamed running Agent: %v %s", action, err, out)
+		}
+	}
+	if current, _ := os.ReadFile(filepath.Join(f.agentDir, "agent.pid")); string(current) != string(pid) {
+		t.Fatal("renamed executable caused a duplicate launch")
+	}
+	cmd := exec.Command(controller, "stop")
+	cmd.Env = f.env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("stop renamed Agent: %v %s", err, out)
 	}
 }
 

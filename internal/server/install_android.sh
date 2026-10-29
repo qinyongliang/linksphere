@@ -155,7 +155,35 @@ running() {
   case "$pid" in ''|*[!0-9]*|0|1) return 1 ;; esac
   kill -0 "$pid" 2>/dev/null || return 1
   exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-  case "$exe" in "$dir/gosshd-agent"|"$dir/gosshd-agent (deleted)") return 0 ;; *) return 1 ;; esac
+  case "$exe" in
+    "$dir/gosshd-agent"|"$dir/gosshd-agent (deleted)") return 0 ;;
+    "$dir/"*) ;;
+    *) return 1 ;;
+  esac
+  # A binary handover can relocate the old image before the controller stops
+  # it. Only accept that image when argv still identifies this installation.
+  args="$(tr '\000' '\n' < "/proc/$pid/cmdline" 2>/dev/null)" || return 1
+  first=true
+  expect_id=false
+  owns_id=false
+  while IFS= read -r arg; do
+    if [ "$first" = true ]; then
+      [ "$arg" = "$dir/gosshd-agent" ] || return 1
+      first=false
+    elif [ "$expect_id" = true ]; then
+      owns_id=false
+      [ "$arg" != "$dir/agent.json" ] || owns_id=true
+      expect_id=false
+    else
+      case "$arg" in
+        --id-file) expect_id=true; owns_id=false ;;
+        --id-file=*) owns_id=false; [ "$arg" != "--id-file=$dir/agent.json" ] || owns_id=true ;;
+      esac
+    fi
+  done <<ARGS
+$args
+ARGS
+  [ "$owns_id" = true ]
 }
 case "${1:-start}" in
   start)
