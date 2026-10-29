@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -348,6 +349,164 @@ func TestTerminalSessionDetachedTimeoutKeepsRecentDisconnects(t *testing.T) {
 
 	if session.shouldCloseForDetachedTimeout(time.Now()) {
 		t.Fatal("recently detached web terminal should survive the old heartbeat timeout")
+	}
+}
+
+func TestManagedTerminalSessionIdleTimeoutUsesActivity(t *testing.T) {
+	manager := newTerminalSessionManager()
+	session := manager.createSession("managed", "user", store.SSHTarget{ID: "target"}, "", 80, 24, nil, true)
+	defer session.close("")
+	now := time.Now().UTC()
+	session.mu.Lock()
+	session.lastActivity = now.Add(-terminalSessionDetachedTimeout - time.Second)
+	session.lastHeartbeat = now
+	session.mu.Unlock()
+	if !session.shouldCloseForDetachedTimeout(now) {
+		t.Fatal("browser heartbeat should not keep an idle managed shell alive")
+	}
+	if _, err := manager.getForUser("other-user", session.id); err == nil {
+		t.Fatal("other user could access managed session")
+	}
+	if !session.shouldCloseForDetachedTimeout(now) {
+		t.Fatal("failed ownership lookup refreshed activity")
+	}
+	if _, err := manager.getForUser("user", session.id); err != nil {
+		t.Fatal(err)
+	}
+	if session.shouldCloseForDetachedTimeout(now) {
+		t.Fatal("authenticated use did not refresh managed activity")
+	}
+	session.mu.Lock()
+	session.lastActivity = now.Add(-terminalSessionDetachedTimeout - time.Second)
+	session.mu.Unlock()
+	unlock, _ := session.lockCommand(false)
+	if session.shouldCloseForDetachedTimeout(now) {
+		t.Fatal("idle cleanup expired an active command or policy review")
+	}
+	unlock()
+	if session.shouldCloseForDetachedTimeout(now) {
+		t.Fatal("command completion did not refresh activity")
+	}
+	session.mu.Lock()
+	session.lastActivity = now.Add(-terminalSessionDetachedTimeout - time.Second)
+	session.shellBusy = true
+	session.mu.Unlock()
+	if session.shouldCloseForDetachedTimeout(now) {
+		t.Fatal("idle cleanup expired a busy shell")
+	}
+}
+
+func TestManagedTerminalSessionRequiresInputAndPrompt(t *testing.T) {
+	manager := newTerminalSessionManager()
+	for _, state := range []string{"input-only", "prompt-only", "no-directory", "directory-only", "both"} {
+		t.Run(state, func(t *testing.T) {
+			session := manager.createSession(state, "user", store.SSHTarget{ID: "target"}, "", 80, 24, nil, true)
+			defer session.close("")
+			if state != "prompt-only" {
+				session.input = io.Discard
+			}
+			if state != "input-only" && state != "directory-only" {
+				session.writeOutput("output", []byte("\x1b]633;A\a"))
+			}
+			if state != "input-only" && state != "no-directory" {
+				session.writeOutput("output", []byte("\x1b]633;P;Cwd=/example\a"))
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			err := session.waitForMCPReady(ctx)
+			if (err == nil) != (state == "both") {
+				t.Fatalf("readiness for %s: %v", state, err)
+			}
+		})
+	}
+}
+
+func TestManagedTerminalCommandWaitsForDirectoryAfterCompletion(t *testing.T) {
+	manager := newTerminalSessionManager()
+	session := manager.createSession("managed", "user", store.SSHTarget{ID: "target"}, "", 80, 24, nil, true)
+	defer session.close("")
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	session.input = writer
+	session.writeOutput("output", []byte("\x1b]633;A\a\x1b]633;P;Cwd=/old\a"))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	completed := make(chan terminalCommandAttempt, 1)
+	go func() { completed <- session.trySendCommand(ctx, "cd /new") }()
+	if _, err := bufio.NewReader(reader).ReadString('\r'); err != nil {
+		t.Fatal(err)
+	}
+	session.writeOutput("output", []byte("\x1b]633;C\a\x1b]633;D;7\a"))
+	session.writeOutput("output", []byte("\x1b]633;A\a"))
+	// A slow original PROMPT_COMMAND can delay cwd until a later transport frame.
+	select {
+	case result := <-completed:
+		t.Fatalf("managed command returned before cwd update: %+v", result)
+	case <-time.After(20 * time.Millisecond):
+	}
+	session.writeOutput("output", []byte("\x1b]633;P;Cwd=invalid\npath\a"))
+	select {
+	case result := <-completed:
+		t.Fatalf("invalid cwd completed managed command: %+v", result)
+	case <-time.After(20 * time.Millisecond):
+	}
+	session.writeOutput("output", []byte("\x1b]633;P;Cwd=/new\a"))
+	select {
+	case result := <-completed:
+		if result.Err != nil || result.Result.ExitCode != 7 {
+			t.Fatalf("managed command completion: %+v", result)
+		}
+	case <-ctx.Done():
+		t.Fatal("managed command did not complete after cwd update")
+	}
+	if cwd, err := session.waitForMCPDirectory(ctx); err != nil || cwd != "/new" {
+		t.Fatalf("directory after completed command: %q %v", cwd, err)
+	}
+}
+
+func TestTerminalManagerShutdownFencesBackgroundStarts(t *testing.T) {
+	manager := newTerminalSessionManager()
+	var wg sync.WaitGroup
+	if !manager.startBackground(&wg) {
+		t.Fatal("background creation reservation rejected before shutdown")
+	}
+	manager.closeAll()
+	if manager.startBackground(&wg) {
+		t.Fatal("background creation accepted after shutdown")
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("shutdown passed an in-progress session creation")
+	case <-time.After(20 * time.Millisecond):
+	}
+	wg.Done()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not finish after creation released its reservation")
+	}
+}
+
+func TestTerminalManagerCloseAllClosesSessionsAndLateInputs(t *testing.T) {
+	manager := newTerminalSessionManager()
+	session := manager.create("web", "user", store.SSHTarget{ID: "target"}, "", 80, 24, nil)
+	manager.closeAll()
+	select {
+	case <-session.ctx.Done():
+	default:
+		t.Fatal("manager shutdown did not cancel web shell")
+	}
+	reader, writer := io.Pipe()
+	session.setAgentInput(writer)
+	if _, err := reader.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("late input was not closed: %v", err)
+	}
+	late := manager.createSession("late", "user", store.SSHTarget{ID: "target"}, "", 80, 24, nil, true)
+	if !late.closed {
+		t.Fatal("manager accepted a session after shutdown")
 	}
 }
 

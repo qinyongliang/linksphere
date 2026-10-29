@@ -31,6 +31,7 @@ var (
 type terminalSessionManager struct {
 	mu       sync.Mutex
 	sessions map[string]*terminalSession
+	closed   bool
 }
 
 type terminalSessionRouteSnapshot struct {
@@ -85,6 +86,12 @@ type terminalSession struct {
 	commandWaiters         []*terminalCommandWaiter
 	oscBuffer              string
 	currentDirectory       string
+	managed                bool
+	lastActivity           time.Time
+	promptReady            bool
+	promptSeen             bool
+	directoryPending       bool
+	activeCommands         int
 }
 
 type terminalScreenBuffer struct {
@@ -98,6 +105,10 @@ func newTerminalSessionManager() *terminalSessionManager {
 }
 
 func (m *terminalSessionManager) create(sessionID, userID string, target store.SSHTarget, sourceIP string, cols, rows int, recorder *terminalRecorder) *terminalSession {
+	return m.createSession(sessionID, userID, target, sourceIP, cols, rows, recorder, false)
+}
+
+func (m *terminalSessionManager) createSession(sessionID, userID string, target store.SSHTarget, sourceIP string, cols, rows int, recorder *terminalRecorder, managed bool) *terminalSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	if strings.TrimSpace(sessionID) == "" {
 		sessionID = newAuditSessionID()
@@ -118,12 +129,45 @@ func (m *terminalSessionManager) create(sessionID, userID string, target store.S
 		screen:                 newTerminalScreenBuffer(rows),
 		lastHeartbeat:          time.Now().UTC(),
 		aiCollaborationEnabled: true,
+		managed:                managed,
+		directoryPending:       managed,
+		lastActivity:           time.Now().UTC(),
 	}
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		s.close("")
+		return s
+	}
 	m.sessions[s.id] = s
 	m.mu.Unlock()
 	go m.watchHeartbeat(s)
 	return s
+}
+
+func (m *terminalSessionManager) closeAll() {
+	m.mu.Lock()
+	m.closed = true
+	sessions := make([]*terminalSession, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	m.mu.Unlock()
+	for _, session := range sessions {
+		session.close("server shutdown")
+	}
+}
+
+// Reserve background work before creation so shutdown cannot pass Wait while a
+// terminal request is still preparing its transport and audit recording.
+func (m *terminalSessionManager) startBackground(wg *sync.WaitGroup) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return false
+	}
+	wg.Add(1)
+	return true
 }
 
 func (m *terminalSessionManager) remove(id string) {
@@ -140,14 +184,17 @@ func (m *terminalSessionManager) listForUser(userID string) []terminalSessionInf
 		session.mu.Lock()
 		if session.userID == userID && !session.closed && session.aiCollaborationEnabled {
 			out = append(out, terminalSessionInfo{
-				ID:            session.id,
-				TargetID:      session.target.ID,
-				TargetName:    session.target.Name,
-				TargetAlias:   session.target.Alias,
-				Endpoint:      targetEndpointForStore(session.target),
-				StartedAt:     session.startedAt,
-				LastHeartbeat: session.lastHeartbeat,
-				ShellBusy:     session.shellBusy,
+				ID:               session.id,
+				TargetID:         session.target.ID,
+				TargetName:       session.target.Name,
+				TargetAlias:      session.target.Alias,
+				Endpoint:         targetEndpointForStore(session.target),
+				StartedAt:        session.startedAt,
+				LastHeartbeat:    session.lastHeartbeat,
+				ShellBusy:        session.shellBusy,
+				Managed:          session.managed,
+				CurrentDirectory: session.currentDirectory,
+				LastActivity:     session.lastActivity,
 			})
 		}
 		session.mu.Unlock()
@@ -166,6 +213,9 @@ func (m *terminalSessionManager) getForUser(userID, sessionID string) (*terminal
 	defer session.mu.Unlock()
 	if session.userID != userID || session.closed {
 		return nil, errors.New("session not found")
+	}
+	if session.managed {
+		session.lastActivity = time.Now().UTC()
 	}
 	return session, nil
 }
@@ -238,9 +288,14 @@ func (m *terminalSessionManager) watchHeartbeat(session *terminalSession) {
 	for {
 		select {
 		case <-ticker.C:
-			expired := session.shouldCloseForDetachedTimeout(time.Now().UTC())
+			session.mu.Lock()
+			expired := session.shouldCloseForDetachedTimeoutLocked(time.Now().UTC())
 			if expired {
-				session.close("reconnect timeout")
+				session.closeLocked("idle timeout")
+			}
+			session.mu.Unlock()
+			if expired {
+				session.cancel()
 				return
 			}
 		case <-session.ctx.Done():
@@ -250,14 +305,17 @@ func (m *terminalSessionManager) watchHeartbeat(session *terminalSession) {
 }
 
 type terminalSessionInfo struct {
-	ID            string
-	TargetID      string
-	TargetName    string
-	TargetAlias   string
-	Endpoint      string
-	StartedAt     time.Time
-	LastHeartbeat time.Time
-	ShellBusy     bool
+	ID               string
+	TargetID         string
+	TargetName       string
+	TargetAlias      string
+	Endpoint         string
+	StartedAt        time.Time
+	LastHeartbeat    time.Time
+	ShellBusy        bool
+	Managed          bool
+	CurrentDirectory string
+	LastActivity     time.Time
 }
 
 func (s *terminalSession) attach(writer *terminalWSWriter) {
@@ -288,9 +346,26 @@ func (s *terminalSession) heartbeat() {
 	s.mu.Unlock()
 }
 
+func (s *terminalSession) touch() {
+	s.mu.Lock()
+	s.lastActivity = time.Now().UTC()
+	s.mu.Unlock()
+}
+
 func (s *terminalSession) shouldCloseForDetachedTimeout(now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.shouldCloseForDetachedTimeoutLocked(now)
+}
+
+func (s *terminalSession) shouldCloseForDetachedTimeoutLocked(now time.Time) bool {
+	if s.managed {
+		if !s.commandMu.TryLock() {
+			return false
+		}
+		defer s.commandMu.Unlock()
+		return !s.closed && !s.shellBusy && s.activeCommands == 0 && now.Sub(s.lastActivity) > terminalSessionDetachedTimeout
+	}
 	return !s.closed && len(s.clients) == 0 && now.Sub(s.lastHeartbeat) > terminalSessionDetachedTimeout
 }
 
@@ -302,8 +377,13 @@ func (s *terminalSession) setAICollaborationEnabled(enabled bool) {
 
 func (s *terminalSession) close(reason string) {
 	s.mu.Lock()
+	s.closeLocked(reason)
+	s.mu.Unlock()
+	s.cancel()
+}
+
+func (s *terminalSession) closeLocked(reason string) {
 	if s.closed {
-		s.mu.Unlock()
 		return
 	}
 	s.closed = true
@@ -313,13 +393,18 @@ func (s *terminalSession) close(reason string) {
 	if s.closeInput != nil {
 		s.closeInput()
 	}
-	s.mu.Unlock()
-	s.cancel()
 }
 
 func (s *terminalSession) writeInput(data string) error {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return errTerminalSessionClosed
+	}
 	writer := s.input
+	if s.managed {
+		s.lastActivity = time.Now().UTC()
+	}
 	s.mu.Unlock()
 	if writer == nil {
 		return errTerminalSessionInputWait
@@ -357,10 +442,12 @@ type terminalCommandAttempt struct {
 }
 
 type terminalCommandWaiter struct {
-	id      string
-	command string
-	output  chan string
-	done    chan int
+	id        string
+	command   string
+	output    chan string
+	done      chan int
+	completed bool
+	exitCode  int
 }
 
 type terminalIntegrationEvent struct {
@@ -461,7 +548,18 @@ func (s *terminalSession) lockCommand(nonBlocking bool) (func(), bool) {
 	} else {
 		s.commandMu.Lock()
 	}
-	return s.commandMu.Unlock, true
+	s.mu.Lock()
+	s.activeCommands++
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		s.activeCommands--
+		if s.managed {
+			s.lastActivity = time.Now().UTC()
+		}
+		s.mu.Unlock()
+		s.commandMu.Unlock()
+	}, true
 }
 
 func (s *terminalSession) sendCommandLocked(ctx context.Context, command string) (terminalCommandResult, error) {
@@ -515,6 +613,9 @@ func (s *terminalSession) commandReadinessError() error {
 		return errTerminalSessionClosed
 	}
 	if s.input == nil {
+		return errTerminalSessionInputWait
+	}
+	if s.managed && (!s.promptReady || s.directoryPending) {
 		return errTerminalSessionInputWait
 	}
 	if s.shellBusy {
@@ -622,12 +723,31 @@ func (s *terminalSession) writeOutput(typ string, data []byte) {
 		switch event.Kind {
 		case "C":
 			s.shellBusy = true
-		case "A", "D":
+			s.directoryPending = true
+			if s.managed {
+				s.promptReady = false
+			}
+		case "A":
+			s.promptSeen = true
+			s.promptReady = !s.managed
 			s.shellBusy = false
+			s.directoryPending = true
+		case "D":
+			s.shellBusy = false
+			s.directoryPending = true
+			if s.managed {
+				s.promptReady = false
+			}
 		case "P":
-			if event.Directory != "" && event.Directory != s.currentDirectory {
-				s.currentDirectory = event.Directory
-				s.broadcastLocked(terminalWSMessage{Type: "cwd", Data: event.Directory})
+			if event.Directory != "" {
+				s.directoryPending = false
+				if s.managed {
+					s.promptReady = s.promptSeen && !s.shellBusy
+				}
+				if event.Directory != s.currentDirectory {
+					s.currentDirectory = event.Directory
+					s.broadcastLocked(terminalWSMessage{Type: "cwd", Data: event.Directory})
+				}
 			}
 		}
 	}
@@ -640,10 +760,22 @@ func (s *terminalSession) writeOutput(typ string, data []byte) {
 		}
 		for _, event := range events {
 			if event.Kind == "D" && (waiter.id == "" || event.ID == "" || event.ID == waiter.id) {
+				waiter.completed = true
+				waiter.exitCode = event.ExitCode
+				if s.managed {
+					continue
+				}
 				select {
 				case waiter.done <- event.ExitCode:
 				default:
 				}
+			}
+			if s.managed && event.Kind == "P" && event.Directory != "" && waiter.completed {
+				select {
+				case waiter.done <- waiter.exitCode:
+				default:
+				}
+				waiter.completed = false
 			}
 		}
 	}
@@ -797,6 +929,12 @@ func (s *terminalSession) currentScreen() string {
 
 func (s *terminalSession) setDirectInput(stdin io.WriteCloser, session *gossh.Session) {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = stdin.Close()
+		_ = session.Close()
+		return
+	}
 	s.input = stdin
 	s.closeInput = func() {
 		_ = closeWriter(stdin)
@@ -814,6 +952,11 @@ func (s *terminalSession) setDirectInput(stdin io.WriteCloser, session *gossh.Se
 
 func (s *terminalSession) setAgentInput(stream io.WriteCloser) {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = stream.Close()
+		return
+	}
 	s.input = agentSessionInput{stream: stream}
 	s.closeInput = func() { _ = stream.Close() }
 	s.resize = func(cols, rows int) {

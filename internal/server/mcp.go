@@ -46,6 +46,7 @@ func (a *App) mcpHandlerWithServer(newServer func(mcpActor) *mcp.Server) http.Ha
 		}
 		requestContext, release := withCommunicationsRequestLifetime(r.Context())
 		defer release()
+		requestContext = context.WithValue(requestContext, mcpSessionSourceIPKey{}, sshSourceIPFromRequest(r))
 		r = r.WithContext(context.WithValue(requestContext, communicationsPrincipalKey{}, principal))
 		handler.ServeHTTP(w, r)
 	})
@@ -208,24 +209,16 @@ func targetConnectionCommand(runtime apiRuntime, target store.SSHTarget) string 
 }
 
 func (a *App) addMCPSessionTools(s *mcp.Server, actor store.User) {
-	mcp.AddTool(s, &mcp.Tool{Name: "session_list", Description: "List active LinkSphere web terminal sessions. A session with shell_busy=true may be inspected or interrupted, but must not receive a new command."},
+	a.addMCPSessionLifecycleTools(s, actor)
+	a.addMCPSessionFileTools(s, actor)
+	mcp.AddTool(s, &mcp.Tool{Name: "session_list", Description: "List active LinkSphere web and MCP-managed terminal sessions with their current directory. A session with shell_busy=true may be inspected or interrupted, but must not receive a new command."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ mcpSessionListInput) (*mcp.CallToolResult, mcpSessionListOutput, error) {
 			if err := a.ensureServices(ctx); err != nil {
 				return nil, mcpSessionListOutput{}, err
 			}
-			var out mcpSessionListOutput
+			out := mcpSessionListOutput{Sessions: []mcpSessionInfo{}}
 			for _, item := range a.terminalSessions.listForUser(actor.ID) {
-				out.Sessions = append(out.Sessions, mcpSessionInfo{
-					ID:                item.ID,
-					TargetID:          item.TargetID,
-					TargetName:        item.TargetName,
-					TargetAlias:       item.TargetAlias,
-					Endpoint:          item.Endpoint,
-					StartedAt:         item.StartedAt.Format(time.RFC3339),
-					LastHeartbeatAt:   item.LastHeartbeat.Format(time.RFC3339),
-					HeartbeatTimeoutS: int(terminalSessionHeartbeatTimeout.Seconds()),
-					ShellBusy:         item.ShellBusy,
-				})
+				out.Sessions = append(out.Sessions, mcpSessionInfoFromTerminal(item))
 			}
 			return nil, out, nil
 		})
@@ -235,17 +228,33 @@ func (a *App) addMCPSessionTools(s *mcp.Server, actor store.User) {
 			if err := a.ensureServices(ctx); err != nil {
 				return nil, mcpSessionCommandOutput{}, err
 			}
-			session, err := a.terminalSessions.getForUser(actor.ID, in.SessionID)
+			session, err := a.mcpSessionForUser(ctx, actor, in.SessionID)
 			if err != nil {
 				return nil, mcpSessionCommandOutput{}, err
 			}
+			sourceIP := session.sourceIP
+			if current, ok := ctx.Value(mcpSessionSourceIPKey{}).(string); session.managed && ok {
+				sourceIP = current
+			}
 			started := time.Now().UTC()
-			run := a.runCommandInTerminalSession(ctx, session, in.Command, terminalSessionCommandOptions{
-				PublicKeyName:   "MCP session",
-				RequireAIReview: true,
-				UserID:          actor.ID,
-				StartedAt:       started,
-			})
+			var run terminalSessionCommandRun
+			if err := a.authorizeMCPSessionCommand(ctx, actor, session); err != nil {
+				var denied *mcpTerminalAccessDeniedError
+				if !errors.As(err, &denied) {
+					return nil, mcpSessionCommandOutput{}, err
+				}
+				run.Decision.Action, run.Decision.Reason = store.DecisionDeny, denied.reason
+				run.Output, run.ExitCode, run.EndedAt = "command denied: "+denied.reason+"\r\n", 126, time.Now().UTC()
+				session.writeOutput("error", []byte(run.Output))
+			} else {
+				run = a.runCommandInTerminalSession(ctx, session, in.Command, terminalSessionCommandOptions{
+					PublicKeyName:   "MCP session",
+					RequireAIReview: true,
+					UserID:          actor.ID,
+					StartedAt:       started,
+					SourceIP:        sourceIP,
+				})
+			}
 			_, _ = a.createAuditLog(context.WithoutCancel(ctx), store.CreateCommandAuditLogParams{
 				ID:             run.AuditID,
 				UserID:         actor.ID,
@@ -260,7 +269,7 @@ func (a *App) addMCPSessionTools(s *mcp.Server, actor store.User) {
 				ExitCode:       &run.ExitCode,
 				StartedAt:      started,
 				EndedAt:        &run.EndedAt,
-				RemoteAddress:  session.sourceIP,
+				RemoteAddress:  sourceIP,
 			})
 			if run.Err != nil {
 				return nil, mcpSessionCommandOutput{}, run.Err
@@ -298,7 +307,7 @@ func (a *App) addMCPSessionTools(s *mcp.Server, actor store.User) {
 
 func (a *App) newMCPServer(actorCtx mcpActor) *mcp.Server {
 	actor := actorCtx.User
-	instructions := "When operating remote servers, prefer the session tool group. First call session_list to find an active LinkSphere terminal session. Use session_send_command only when shell_busy is false; for a busy session, use session_screen to inspect it or session_interrupt to send Ctrl+C. These tools preserve web-terminal replay, audit logs, command policy checks, and manual approval flow. For tunnel management use tunnel_list, tunnel_get, tunnel_create, tunnel_update, tunnel_enable, tunnel_stop, tunnel_delete and tunnel_traffic. Creation saves a stopped configuration; enabling starts it. SSH temporary forwards are visible while active and can only be stopped."
+	instructions := "When operating remote servers, prefer the session tool group. Call session_list to find an existing LinkSphere terminal session, or session_targets then session_create to open an independent session without a browser. Sessions preserve the shell working directory and environment. Use session_send_command only when shell_busy is false; for a busy session, use session_screen to inspect it or session_interrupt to send Ctrl+C. Use read, edit and write to inspect and change text files relative to the session current directory. These tools preserve terminal replay, audit logs, command policy checks, and manual approval flow. Close sessions you created with session_close when finished; idle MCP sessions expire after ten minutes. For tunnel management use tunnel_list, tunnel_get, tunnel_create, tunnel_update, tunnel_enable, tunnel_stop, tunnel_delete and tunnel_traffic. Creation saves a stopped configuration; enabling starts it. SSH temporary forwards are visible while active and can only be stopped."
 	if mcpToolGroupAllowed(actorCtx.ToolGroups, "desktop") {
 		instructions += " " + desktopMCPInstructions()
 	}
@@ -872,6 +881,8 @@ type mcpSessionInfo struct {
 	LastHeartbeatAt   string `json:"last_heartbeat_at"`
 	HeartbeatTimeoutS int    `json:"heartbeat_timeout_seconds"`
 	ShellBusy         bool   `json:"shell_busy"`
+	Managed           bool   `json:"managed"`
+	CurrentDirectory  string `json:"current_directory"`
 }
 
 type mcpSessionCommandOutput struct {

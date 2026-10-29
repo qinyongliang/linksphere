@@ -68,6 +68,9 @@ func (a *App) Registry() *AgentRegistry {
 }
 
 func (a *App) Close() error {
+	if a.terminalSessions != nil {
+		a.terminalSessions.closeAll()
+	}
 	if a.desktopSessions != nil {
 		a.desktopSessions.Close()
 	}

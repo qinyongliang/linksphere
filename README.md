@@ -117,6 +117,7 @@ ssh -p 22022 demo-server@linksphere.example.com "uptime"
 ## Documentation
 
 - [Agent installation](docs/agent-installation.md)
+- [Session MCP and portable file tools](docs/session-mcp.md)
 - [Desktop MCP](docs/desktop-mcp.md)
 - [Android accessibility setup](docs/android-accessibility.md)
 - [Android desktop backend](docs/android-desktop-mcp.md)

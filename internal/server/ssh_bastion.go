@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -1581,7 +1580,7 @@ func (a *App) openTunnelSSHClient(ctx context.Context, target store.SSHTarget, d
 				return nil, fmt.Errorf("load proxy target: %w", err)
 			}
 			if proxyTarget.TargetType == store.TargetAgent {
-				conn, err := a.openAgentTCPConn(proxyTarget.AgentID, addr)
+				conn, err := a.openAgentTCPConnContext(ctx, proxyTarget.AgentID, addr)
 				if err != nil {
 					return nil, fmt.Errorf("connect proxy target: %w", err)
 				}
@@ -1621,11 +1620,11 @@ func (a *App) openTunnelSSHClient(ctx context.Context, target store.SSHTarget, d
 		return gossh.NewClient(clientConn, chans, reqs), nil
 	}
 	if target.TargetType == store.TargetAgent {
-		tcpConn, err := a.openAgentTCPConn(target.AgentID, addr)
+		tcpConn, err := a.openAgentTCPConnContext(ctx, target.AgentID, addr)
 		if err != nil {
 			return nil, err
 		}
-		conn, chans, reqs, err := gossh.NewClientConn(tcpConn, addr, cfg)
+		conn, chans, reqs, err := tunnelSSHHandshake(ctx, tcpConn, addr, cfg)
 		if err != nil {
 			_ = tcpConn.Close()
 			return nil, err
@@ -1653,27 +1652,13 @@ func (a *App) resolveTargetCredential(ctx context.Context, target store.SSHTarge
 }
 
 func (a *App) openAgentTCPConn(agentID, addr string) (net.Conn, error) {
-	session, err := a.registry.Get(agentID)
+	return a.openAgentTCPConnContext(context.Background(), agentID, addr)
+}
+
+func (a *App) openAgentTCPConnContext(ctx context.Context, agentID, addr string) (net.Conn, error) {
+	reader, stream, err := a.openAgentStreamContext(ctx, agentID, protocol.StreamRequest{Type: protocol.StreamTCP, Target: addr})
 	if err != nil {
 		return nil, err
-	}
-	stream, err := session.Open()
-	if err != nil {
-		return nil, err
-	}
-	if err := protocol.WriteJSONLine(stream, protocol.StreamRequest{Type: protocol.StreamTCP, Target: addr}); err != nil {
-		_ = stream.Close()
-		return nil, err
-	}
-	reader := bufio.NewReader(stream)
-	resp, err := protocol.ReadJSONLine[protocol.StreamResponse](reader)
-	if err != nil {
-		_ = stream.Close()
-		return nil, err
-	}
-	if !resp.OK {
-		_ = stream.Close()
-		return nil, errors.New(resp.Error)
 	}
 	return readWriteConn{Reader: reader, Writer: stream, Closer: stream, remoteAddr: dummyAddr(addr)}, nil
 }

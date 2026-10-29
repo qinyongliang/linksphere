@@ -3542,3 +3542,16 @@ html[data-theme="dark"] .manual-review-actions button.danger {
 
 /* LinkSphere navigation and compact page actions. */
 .nav-group{display:grid;gap:4px}.nav-group + .nav-group{margin-top:16px}.nav-group .nav-caption{margin-bottom:6px}.resource-head{justify-content:flex-end}.resource-head:empty{display:none}
+/* Keep organization and account controls reachable on short viewports. */
+.console > .sidebar {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+}
+
+.console > .sidebar > * {
+  flex-shrink: 0;
+}

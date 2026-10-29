@@ -643,8 +643,16 @@ func (a *App) handleTargetTerminalWS(w http.ResponseWriter, r *http.Request, use
 	var recorder *terminalRecorder
 	var auditLogID string
 	var sessionID string
+	var finishTerminalCreation func()
 	startedAt := time.Now().UTC()
 	if !restored {
+		if !a.terminalSessions.startBackground(&a.backgroundWG) {
+			writeError(w, http.StatusServiceUnavailable, "terminal service is shutting down")
+			return
+		}
+		var finishOnce sync.Once
+		finishTerminalCreation = func() { finishOnce.Do(a.backgroundWG.Done) }
+		defer finishTerminalCreation()
 		sessionID = newAuditSessionID()
 		recorder, err = newTerminalRecorder(a.auditRecordingsPath, sessionID, cols, rows, target)
 		if err != nil {
@@ -684,6 +692,10 @@ func (a *App) handleTargetTerminalWS(w http.ResponseWriter, r *http.Request, use
 		session = a.terminalSessions.create(sessionID, user.ID, target, sourceIP, cols, rows, recorder)
 		session.startedAt = startedAt
 		session.auditLogID = auditLogID
+		if session.ctx.Err() != nil {
+			a.completeShellAuditAsync(recorder, auditLogID, 255, time.Now().UTC())
+			return
+		}
 		log.Printf("web terminal session created: user=%s target=%s alias=%s session=%s type=%s source=%s clients=1", user.ID, target.ID, target.Alias, session.id, target.TargetType, sourceIP)
 		a.backgroundWG.Add(1)
 		go func() {
@@ -698,6 +710,7 @@ func (a *App) handleTargetTerminalWS(w http.ResponseWriter, r *http.Request, use
 			session.broadcastLocked(terminalWSMessage{Type: "exit", Code: exitCode})
 			session.mu.Unlock()
 		}()
+		finishTerminalCreation()
 	} else {
 		log.Printf("web terminal session restored: user=%s target=%s alias=%s session=%s source=%s", user.ID, target.ID, target.Alias, session.id, sourceIP)
 	}
@@ -759,6 +772,8 @@ func (a *App) webDirectTerminal(terminalSession *terminalSession) int {
 		return 255
 	}
 	defer client.Close()
+	stopClient := context.AfterFunc(terminalSession.ctx, func() { _ = client.Close() })
+	defer stopClient()
 	session, err := client.NewSession()
 	if err != nil {
 		terminalSession.writeOutput("error", []byte(err.Error()))
@@ -807,12 +822,14 @@ func (a *App) webDirectTerminal(terminalSession *terminalSession) int {
 }
 
 func (a *App) webAgentTerminal(session *terminalSession) int {
-	reader, stream, err := a.openAgentStream(session.target.AgentID, protocol.StreamRequest{Type: protocol.StreamShell, Width: session.cols, Height: session.rows})
+	reader, stream, err := a.openAgentStreamContext(session.ctx, session.target.AgentID, protocol.StreamRequest{Type: protocol.StreamShell, Width: session.cols, Height: session.rows})
 	if err != nil {
 		session.writeOutput("error", []byte(err.Error()))
 		return 255
 	}
 	defer stream.Close()
+	stopStream := context.AfterFunc(session.ctx, func() { _ = stream.Close() })
+	defer stopStream()
 	session.setAgentInput(stream)
 	exitCode := 255
 	for {
@@ -1733,10 +1750,12 @@ func (a *App) targetSFTPAccess(ctx context.Context, id string, user store.User, 
 
 func (a *App) openSFTPClient(ctx context.Context, target store.SSHTarget) (*sftp.Client, func(), error) {
 	if target.TargetType == store.TargetAgent {
-		reader, stream, err := a.openAgentStream(target.AgentID, protocol.StreamRequest{Type: protocol.StreamSFTP})
+		reader, stream, err := a.openAgentStreamContext(ctx, target.AgentID, protocol.StreamRequest{Type: protocol.StreamSFTP})
 		if err != nil {
 			return nil, nil, err
 		}
+		stopStream := context.AfterFunc(ctx, func() { _ = stream.Close() })
+		defer stopStream()
 		client, err := sftp.NewClientPipe(reader, stream)
 		if err != nil {
 			_ = stream.Close()
@@ -1751,6 +1770,8 @@ func (a *App) openSFTPClient(ctx context.Context, target store.SSHTarget) (*sftp
 	if err != nil {
 		return nil, nil, err
 	}
+	stopClient := context.AfterFunc(ctx, func() { _ = sshClient.Close() })
+	defer stopClient()
 	client, err := sftp.NewClient(sshClient)
 	if err != nil {
 		_ = sshClient.Close()

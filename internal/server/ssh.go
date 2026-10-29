@@ -177,14 +177,41 @@ func (a *App) handleSSHConn(raw net.Conn, cfg *gossh.ServerConfig) {
 }
 
 func (a *App) openAgentStream(id string, req protocol.StreamRequest) (*bufio.Reader, io.ReadWriteCloser, error) {
+	return a.openAgentStreamContext(context.Background(), id, req)
+}
+
+func (a *App) openAgentStreamContext(ctx context.Context, id string, req protocol.StreamRequest) (*bufio.Reader, io.ReadWriteCloser, error) {
 	session, err := a.registry.Get(id)
 	if err != nil {
 		return nil, nil, err
 	}
-	stream, err := session.Open()
-	if err != nil {
-		return nil, nil, err
+	type openedStream struct {
+		stream io.ReadWriteCloser
+		err    error
 	}
+	opened := make(chan openedStream)
+	go func() {
+		stream, err := session.Open()
+		select {
+		case opened <- openedStream{stream, err}:
+		case <-ctx.Done():
+			if stream != nil {
+				_ = stream.Close()
+			}
+		}
+	}()
+	var stream io.ReadWriteCloser
+	select {
+	case result := <-opened:
+		if result.err != nil {
+			return nil, nil, result.err
+		}
+		stream = result.stream
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+	stopStream := context.AfterFunc(ctx, func() { _ = stream.Close() })
+	defer stopStream()
 	if err := protocol.WriteJSONLine(stream, req); err != nil {
 		_ = stream.Close()
 		return nil, nil, err

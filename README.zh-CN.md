@@ -117,6 +117,7 @@ ssh -p 22022 demo-server@linksphere.example.com "uptime"
 ## 使用文档
 
 - [Agent 安装](docs/agent-installation.md)
+- [Session MCP 与通用文件工具](docs/session-mcp.md)
 - [桌面 MCP](docs/desktop-mcp.md)
 - [Android 无障碍接入](docs/android-accessibility.md)
 - [Android 桌面后端](docs/android-desktop-mcp.md)
