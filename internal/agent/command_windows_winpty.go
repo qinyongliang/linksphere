@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/qinyongliang/linksphere/internal/protocol"
@@ -54,15 +55,22 @@ func (c *Client) handleWinPTYShell(stream io.ReadWriteCloser, reader *bufio.Read
 		defer close(processDone)
 		exited <- waitHandleExitCode(pty.GetProcHandle())
 	}()
+	processID, _ := windows.GetProcessId(windows.Handle(pty.GetProcHandle()))
+	stop := sync.OnceFunc(func() {
+		stopWindowsProcessTree(windows.Handle(pty.GetProcHandle()))
+		_ = pty.StdIn.Close()
+		_ = pty.StdOut.Close()
+	})
 	code := serveWindowsPTYShell(stream, reader, pty.StdOut, c.cfg.Shell, marker,
 		func(data []byte) { writeWinPTYInput(pty.StdIn, data) },
+		func() { _ = interruptConsoleProcess(processID) },
 		func(data []byte) {
 			if len(data) == 8 {
 				width := uint32(data[0])<<24 | uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
 				height := uint32(data[4])<<24 | uint32(data[5])<<16 | uint32(data[6])<<8 | uint32(data[7])
 				pty.SetSize(width, height)
 			}
-		}, func() { stopWindowsProcessTree(windows.Handle(pty.GetProcHandle())) }, exited, nil)
+		}, stop, exited, nil)
 	<-processDone
 	_ = protocol.WriteFrame(stream, protocol.ExitFrame(code))
 	return nil

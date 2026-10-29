@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,13 +19,16 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const windowsCommandQueryTimeout = 5 * time.Second
+const (
+	windowsCommandQueryTimeout = 5 * time.Second
+	windowsShellInputLimit     = 128 * 1024
+)
 
-// A single owner serializes PTY input, output and managed completions. In
+// A single controller owns terminal state and an ordered, bounded stdin writer. In
 // particular, a status query must never be queued behind a running application:
 // that application could read it as its own stdin. Only the shell's next
 // printable prompt authorizes sending the query to the same persistent CMD.
-func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, output io.Reader, shell, marker string, writeInput func([]byte), resize func([]byte), stop func(), exited <-chan int, drainOutput func()) int {
+func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, output io.Reader, shell, marker string, writeInput func([]byte), interrupt func(), resize func([]byte), stop func(), exited <-chan int, drainOutput func()) int {
 	type frameResult struct {
 		frame protocol.Frame
 		err   error
@@ -33,8 +38,50 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 		err  error
 	}
 	done := make(chan struct{})
-	defer close(done)
-	defer stop()
+	stop = sync.OnceFunc(stop)
+	inputQueue := make(chan []byte, 16)
+	writerDone := make(chan struct{})
+	var inputWritten atomic.Int64
+	go func() {
+		defer close(writerDone)
+		for {
+			select {
+			case <-done:
+				return
+			case data := <-inputQueue:
+				select {
+				case <-done:
+					return
+				default:
+				}
+				writeInput(data)
+				inputWritten.Add(int64(len(data)))
+			}
+		}
+	}()
+	defer func() {
+		close(done)
+		// stop must close PTY stdin as well as stop its process. Closing a
+		// Windows pipe cancels a blocked Write, allowing this worker to join.
+		stop()
+		<-writerDone
+	}()
+	var inputQueued int64
+	queueInput := func(data []byte) bool {
+		if len(data) == 0 {
+			return true
+		}
+		if int64(len(data)) > windowsShellInputLimit-(inputQueued-inputWritten.Load()) {
+			return false
+		}
+		select {
+		case inputQueue <- append([]byte(nil), data...):
+			inputQueued += int64(len(data))
+			return true
+		default:
+			return false
+		}
+	}
 	frames := make(chan frameResult)
 	chunks := make(chan outputResult)
 	go func() {
@@ -102,8 +149,16 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 		}
 		return protocol.WriteFrame(stream, protocol.Frame{Type: protocol.FrameCommandDone, Data: data})
 	}
+	inputFailure := func(reason string) int {
+		if active != nil {
+			_ = complete(protocol.ShellCommandResult{ID: active.ID, ExitCode: 255, Error: reason})
+		}
+		_ = protocol.WriteFrame(stream, protocol.Frame{Type: protocol.FrameStderr, Data: []byte(reason + "\r\n")})
+		return 255
+	}
+	const inputOverflowError = "terminal input buffer exceeded; session closed"
 	markBusy := func() error { return writeOutput("\x1b]633;C\a") }
-	startQuery := func() {
+	startQuery := func() bool {
 		threshold = lower + (upper-lower+1)/2
 		// A resize can replay result records from earlier thresholds too.
 		// Match this exact query, independently of the command completion ID.
@@ -113,7 +168,7 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 		queryBase = cloneWindowsPromptDecoder(&decoder)
 		queryTimer = time.NewTimer(windowsCommandQueryTimeout)
 		queryDeadline = queryTimer.C
-		writeInput([]byte(query + "\r"))
+		return queueInput([]byte(query + "\r"))
 	}
 	for {
 		select {
@@ -148,13 +203,30 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 				if markBusy() != nil {
 					return 255
 				}
-				writeInput([]byte(command.Command + "\r"))
+				if !queueInput([]byte(command.Command + "\r")) {
+					return inputFailure(inputOverflowError)
+				}
 			case protocol.FrameStdin:
+				if strings.ContainsRune(string(frame.Data), '\x03') {
+					// Include input dequeued by the worker but not yet written.
+					blocked := inputQueued != inputWritten.Load()
+					// Native console interrupts bypass the stdin pipe. Never let a
+					// blocked paste postpone cancellation or execute after it.
+					interrupt()
+					if blocked || query != "" || strings.Trim(string(frame.Data), "\x03") != "" {
+						return inputFailure("terminal input canceled while input was pending; session closed")
+					}
+					ready = false
+					if markBusy() != nil {
+						return 255
+					}
+					continue
+				}
 				if query != "" {
 					// A browser keystroke arriving between prompt and query must
 					// not change ERRORLEVEL or be consumed by the private query.
 					if len(queuedInput)+len(frame.Data) > 64*1024 {
-						return 255
+						return inputFailure(inputOverflowError)
 					}
 					queuedInput = append(queuedInput, frame.Data...)
 					continue
@@ -170,7 +242,9 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 						return 255
 					}
 				}
-				writeInput(frame.Data)
+				if !queueInput(frame.Data) {
+					return inputFailure(inputOverflowError)
+				}
 			case protocol.FrameResize:
 				resize(frame.Data)
 			}
@@ -210,7 +284,9 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 							upper = threshold - 1
 						}
 						if lower != upper {
-							startQuery()
+							if !startQuery() {
+								return inputFailure(inputOverflowError)
+							}
 							continue
 						}
 						result.ExitCode = int(lower)
@@ -225,7 +301,9 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 						if markBusy() != nil {
 							return 255
 						}
-						writeInput(queuedInput)
+						if !queueInput(queuedInput) {
+							return inputFailure(inputOverflowError)
+						}
 						queuedInput = nil
 					}
 				}
@@ -245,7 +323,9 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 						} else {
 							result = protocol.ShellCommandResult{ID: active.ID, ExitCode: 255}
 							lower, upper = -2147483648, 2147483647
-							startQuery()
+							if !startQuery() {
+								return inputFailure(inputOverflowError)
+							}
 						}
 					}
 				}

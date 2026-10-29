@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,7 +35,7 @@ func TestWindowsManagedCommandWaitsForPromptAndQueuesManualInput(t *testing.T) {
 	done := make(chan int, 1)
 	go func() {
 		done <- serveWindowsPTYShell(agentConn, bufio.NewReader(agentConn), outputRead, "cmd.exe", testLegacyMarker,
-			func(data []byte) { input <- string(data) }, func([]byte) {}, func() {}, exited, nil)
+			func(data []byte) { input <- string(data) }, func() {}, func([]byte) {}, func() {}, exited, nil)
 	}()
 	frames := make(chan protocol.Frame, 128)
 	go func() {
@@ -149,7 +151,7 @@ func TestWindowsManagedShellDrainsOutputAfterProcessExit(t *testing.T) {
 	done := make(chan int, 1)
 	go func() {
 		done <- serveWindowsPTYShell(agentConn, bufio.NewReader(agentConn), outputRead, "cmd.exe", testLegacyMarker,
-			func([]byte) {}, func([]byte) {}, func() {}, exited, func() {
+			func([]byte) {}, func() {}, func([]byte) {}, func() {}, exited, func() {
 				io.WriteString(outputWrite, "final rendered output")
 				outputWrite.Close()
 			})
@@ -220,5 +222,139 @@ func TestWindowsManagedCommandSurvivesQueryWindowResize(t *testing.T) {
 		if frame.Type == protocol.FrameExit {
 			t.Fatalf("shell exited during status query: %d", protocol.ExitCode(frame))
 		}
+	}
+}
+
+func TestWindowsManagedShellBlockedInputDisconnectStopsAndJoinsWriter(t *testing.T) {
+	for _, trigger := range []string{"disconnect", "interrupt", "overflow"} {
+		t.Run(trigger, func(t *testing.T) {
+			agentConn, peer := net.Pipe()
+			defer agentConn.Close()
+			defer peer.Close()
+			outputRead, outputWrite := io.Pipe()
+			defer outputRead.Close()
+			defer outputWrite.Close()
+			inputRead, inputWrite, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			entered, writeReturned, stopped := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			interrupted := make(chan struct{})
+			interrupt := sync.OnceFunc(func() { close(interrupted) })
+			stop := sync.OnceFunc(func() {
+				inputRead.Close()
+				inputWrite.Close()
+				close(stopped)
+			})
+			defer stop()
+			done := make(chan int, 1)
+			go func() {
+				done <- serveWindowsPTYShell(agentConn, bufio.NewReader(agentConn), outputRead, "cmd.exe", testLegacyMarker,
+					func(data []byte) { close(entered); inputWrite.Write(data); close(writeReturned) }, interrupt, func([]byte) {}, stop, make(chan int), nil)
+			}()
+			errors := make(chan string, 8)
+			go func() {
+				for {
+					frame, err := protocol.ReadFrame(peer)
+					if err != nil {
+						return
+					}
+					if frame.Type == protocol.FrameStderr {
+						errors <- string(frame.Data)
+					}
+				}
+			}()
+			if err := protocol.WriteFrame(peer, protocol.Frame{Type: protocol.FrameStdin, Data: make([]byte, 64*1024)}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("input write was not attempted")
+			}
+			select {
+			case <-writeReturned:
+				t.Fatal("Windows pipe did not block")
+			case <-time.After(30 * time.Millisecond):
+			}
+			switch trigger {
+			case "disconnect":
+				peer.Close()
+			case "interrupt":
+				if err := protocol.WriteFrame(peer, protocol.Frame{Type: protocol.FrameStdin, Data: []byte{0x03}}); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-interrupted:
+				case <-time.After(300 * time.Millisecond):
+					t.Error("Ctrl+C waited behind the blocked input writer")
+				}
+			case "overflow":
+				for _, size := range []int{64 * 1024, 1} {
+					if err := protocol.WriteFrame(peer, protocol.Frame{Type: protocol.FrameStdin, Data: make([]byte, size)}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if trigger != "disconnect" {
+				select {
+				case message := <-errors:
+					if !strings.Contains(message, "session closed") {
+						t.Errorf("input failure was silent: %q", message)
+					}
+				case <-time.After(300 * time.Millisecond):
+					t.Error("input cancellation/overflow did not report its failure")
+				}
+			}
+			select {
+			case <-stopped:
+			case <-time.After(300 * time.Millisecond):
+				t.Errorf("%s did not stop a blocked Windows input write", trigger)
+			}
+			stop() // Also release the pipe if the regression fails.
+			select {
+			case <-done:
+				select {
+				case <-writeReturned:
+				default:
+					t.Error("controller returned without joining its input writer")
+				}
+			case <-time.After(time.Second):
+				t.Error("controller did not finish after pipe release")
+			}
+		})
+	}
+}
+
+func TestWindowsSynchronousPipeCloseUnblocksInputWrite(t *testing.T) {
+	var readHandle, writeHandle windows.Handle
+	if err := windows.CreatePipe(&readHandle, &writeHandle, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(readHandle)
+	input := os.NewFile(uintptr(writeHandle), "synchronous-input")
+	defer input.Close()
+	writeReturned := make(chan struct{})
+	go func() {
+		input.Write(make([]byte, 64*1024))
+		close(writeReturned)
+	}()
+	select {
+	case <-writeReturned:
+		t.Fatal("synchronous Windows pipe did not block")
+	case <-time.After(30 * time.Millisecond):
+	}
+	closeReturned := make(chan struct{})
+	go func() { input.Close(); close(closeReturned) }()
+	select {
+	case <-writeReturned:
+	case <-time.After(300 * time.Millisecond):
+		t.Error("closing synchronous PTY input did not cancel its write")
+		windows.CloseHandle(readHandle)
+	}
+	select {
+	case <-closeReturned:
+	case <-time.After(time.Second):
+		t.Error("input close did not finish")
 	}
 }

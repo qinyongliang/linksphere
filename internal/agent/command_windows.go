@@ -207,8 +207,15 @@ func (c *Client) handleConPTYShell(stream io.ReadWriteCloser, reader *bufio.Read
 		defer close(processDone)
 		exited <- waitProcessExitCode(process)
 	}()
+	stop := sync.OnceFunc(func() {
+		stopWindowsProcessTree(process)
+		_ = input.Close()
+		_ = output.Close()
+		closeConsole()
+	})
 	code := serveWindowsPTYShell(stream, reader, output, c.cfg.Shell, marker,
 		func(data []byte) { writeConPTYInput(input, data, processID) },
+		func() { _ = interruptConsoleProcess(processID) },
 		func(data []byte) {
 			if len(data) == 8 {
 				width := int16(uint16(data[2])<<8 | uint16(data[3]))
@@ -217,7 +224,7 @@ func (c *Client) handleConPTYShell(stream io.ReadWriteCloser, reader *bufio.Read
 					_ = windows.ResizePseudoConsole(console, windows.Coord{X: width, Y: height})
 				}
 			}
-		}, func() { stopWindowsProcessTree(process) }, exited, closeConsole)
+		}, stop, exited, closeConsole)
 	<-processDone
 	_ = protocol.WriteFrame(stream, protocol.ExitFrame(code))
 	return nil
