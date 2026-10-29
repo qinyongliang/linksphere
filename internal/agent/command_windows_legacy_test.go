@@ -16,6 +16,21 @@ import (
 
 const testLegacyMarker = "__GOSSHD_0123456789abcdef0123456789abcdef__"
 
+func TestWindowsPromptTitleDoesNotLeakRecords(t *testing.T) {
+	for _, terminator := range []string{"\a", "\x1b\\"} {
+		title := "\x1b]0;cmd.exe - prompt " + testLegacyMarker + "0;$T;$P" + legacyWindowsPromptEnd(testLegacyMarker) + "$_$P$G" + terminator
+		ordinaryTitle := "\x1b]0;fixture" + terminator
+		input := "before" + title + "after" + ordinaryTitle
+		for split := 0; split <= len(input); split++ {
+			decoder := legacyWindowsPromptDecoder{marker: testLegacyMarker}
+			got := decoder.filterPromptTitles(input[:split], false) + decoder.filterPromptTitles(input[split:], true)
+			if got != "beforeafter"+ordinaryTitle {
+				t.Fatalf("fragmented title leaked prompt metadata at byte %d", split)
+			}
+		}
+	}
+}
+
 var testLegacyEnd = legacyWindowsPromptEnd(testLegacyMarker)
 
 func TestLegacyWindowsPromptDecoderAcrossEveryByteBoundary(t *testing.T) {

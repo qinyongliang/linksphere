@@ -18,6 +18,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/google/uuid"
 	"github.com/qinyongliang/linksphere/internal/protocol"
 
 	"golang.org/x/sys/windows"
@@ -184,7 +185,11 @@ func (c *Client) handleConPTYShell(stream io.ReadWriteCloser, reader *bufio.Read
 	defer input.Close()
 	defer output.Close()
 
-	process, processID, attributeList, err := startConPTYProcess(c.cfg.Shell, c.cfg.Root, console)
+	// ConPTY can pass OSC prompt metadata through before it renders preceding
+	// console text. Use printable records so completion follows rendered output,
+	// then normalize them to the same OSC protocol as the WinPTY fallback.
+	marker := "__GOSSHD_" + strings.ReplaceAll(uuid.NewString(), "-", "") + "__"
+	process, processID, attributeList, err := startConPTYProcess(c.cfg.Shell, c.cfg.Root, console, windowsLegacyInteractiveShellArgs(c.cfg.Shell, marker))
 	if err != nil {
 		return err
 	}
@@ -196,7 +201,7 @@ func (c *Client) handleConPTYShell(stream io.ReadWriteCloser, reader *bufio.Read
 	}
 
 	go copyFramesToConPTY(input, reader, console, processID)
-	go copyReaderToFrame(stream, protocol.FrameStdout, output)
+	go copyLegacyWindowsReaderToFrame(stream, protocol.FrameStdout, output, marker)
 
 	code := waitProcessExitCode(process)
 	_ = protocol.WriteFrame(stream, protocol.ExitFrame(code))
@@ -230,7 +235,7 @@ func createConPTYPipes() (windows.Handle, windows.Handle, windows.Handle, window
 	return inRead, inWrite, outRead, outWrite, nil
 }
 
-func startConPTYProcess(shell, root string, console windows.Handle) (windows.Handle, uint32, *windows.ProcThreadAttributeListContainer, error) {
+func startConPTYProcess(shell, root string, console windows.Handle, args []string) (windows.Handle, uint32, *windows.ProcThreadAttributeListContainer, error) {
 	shellPath, err := exec.LookPath(shell)
 	if err != nil {
 		return 0, 0, nil, err
@@ -257,7 +262,7 @@ func startConPTYProcess(shell, root string, console windows.Handle) (windows.Han
 		attributeList.Delete()
 		return 0, 0, nil, err
 	}
-	commandLine, err := windows.UTF16PtrFromString(windowsCommandLine(shell))
+	commandLine, err := windows.UTF16PtrFromString(windowsCommandLineWithArgs(shell, args))
 	if err != nil {
 		attributeList.Delete()
 		return 0, 0, nil, err

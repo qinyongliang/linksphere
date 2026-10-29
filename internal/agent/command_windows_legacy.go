@@ -23,6 +23,7 @@ type legacyWindowsPromptDecoder struct {
 	promptOrder   [][32]byte
 	redrawing     bool
 	controlBuffer string
+	titleBuffer   string
 }
 
 const (
@@ -147,8 +148,53 @@ func (d *legacyWindowsPromptDecoder) writeRaw(out *strings.Builder, raw string) 
 	}
 }
 
+// cmd briefly puts its startup command in the console title. Keep private
+// prompt records out of that title, including titles split across pipe reads.
+func (d *legacyWindowsPromptDecoder) filterPromptTitles(data string, eof bool) string {
+	const prefix = "\x1b]0;"
+	input := d.titleBuffer + data
+	d.titleBuffer = ""
+	var out strings.Builder
+	for input != "" {
+		start := strings.Index(input, prefix)
+		if start < 0 {
+			if !eof {
+				for n := len(prefix) - 1; n > 0; n-- {
+					if strings.HasSuffix(input, prefix[:n]) {
+						d.titleBuffer = input[len(input)-n:]
+						input = input[:len(input)-n]
+						break
+					}
+				}
+			}
+			out.WriteString(input)
+			break
+		}
+		out.WriteString(input[:start])
+		input = input[start:]
+		end, size := strings.IndexByte(input, '\a'), 1
+		if st := strings.Index(input, "\x1b\\"); st >= 0 && (end < 0 || st < end) {
+			end, size = st, 2
+		}
+		if end < 0 {
+			if !eof && len(input) <= legacyWindowsPromptLimit {
+				d.titleBuffer = input
+			} else {
+				out.WriteString(input)
+			}
+			break
+		}
+		title := input[:end+size]
+		if !strings.Contains(title, d.marker) && !strings.Contains(title, legacyWindowsPromptEnd(d.marker)) {
+			out.WriteString(title)
+		}
+		input = input[end+size:]
+	}
+	return out.String()
+}
+
 func (d *legacyWindowsPromptDecoder) decode(data string, eof bool) string {
-	d.pending += data
+	d.pending += d.filterPromptTitles(data, eof)
 	endMarker := legacyWindowsPromptEnd(d.marker)
 	var out strings.Builder
 	for d.pending != "" {
