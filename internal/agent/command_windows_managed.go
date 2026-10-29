@@ -59,13 +59,14 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 			}
 		}
 	}()
-	defer func() {
+	shutdown := sync.OnceFunc(func() {
 		close(done)
 		// stop must close PTY stdin as well as stop its process. Closing a
 		// Windows pipe cancels a blocked Write, allowing this worker to join.
 		stop()
 		<-writerDone
-	}()
+	})
+	defer shutdown()
 	var inputQueued int64
 	queueInput := func(data []byte) bool {
 		if len(data) == 0 {
@@ -150,6 +151,10 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 		return protocol.WriteFrame(stream, protocol.Frame{Type: protocol.FrameCommandDone, Data: data})
 	}
 	inputFailure := func(reason string) int {
+		// Cancel queued writes before reporting the failure or unblocking the
+		// application. Neither error delivery nor a console interrupt may let
+		// the pending paste resume first.
+		shutdown()
 		if active != nil {
 			_ = complete(protocol.ShellCommandResult{ID: active.ID, ExitCode: 255, Error: reason})
 		}
@@ -210,12 +215,12 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 				if strings.ContainsRune(string(frame.Data), '\x03') {
 					// Include input dequeued by the worker but not yet written.
 					blocked := inputQueued != inputWritten.Load()
-					// Native console interrupts bypass the stdin pipe. Never let a
-					// blocked paste postpone cancellation or execute after it.
-					interrupt()
 					if blocked || query != "" || strings.Trim(string(frame.Data), "\x03") != "" {
 						return inputFailure("terminal input canceled while input was pending; session closed")
 					}
+					// With no pending data, interrupt the application and retain
+					// its shell. A pending paste instead uses teardown above.
+					interrupt()
 					ready = false
 					if markBusy() != nil {
 						return 255

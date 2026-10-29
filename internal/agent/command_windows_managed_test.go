@@ -284,11 +284,6 @@ func TestWindowsManagedShellBlockedInputDisconnectStopsAndJoinsWriter(t *testing
 				if err := protocol.WriteFrame(peer, protocol.Frame{Type: protocol.FrameStdin, Data: []byte{0x03}}); err != nil {
 					t.Fatal(err)
 				}
-				select {
-				case <-interrupted:
-				case <-time.After(300 * time.Millisecond):
-					t.Error("Ctrl+C waited behind the blocked input writer")
-				}
 			case "overflow":
 				for _, size := range []int{64 * 1024, 1} {
 					if err := protocol.WriteFrame(peer, protocol.Frame{Type: protocol.FrameStdin, Data: make([]byte, size)}); err != nil {
@@ -314,6 +309,13 @@ func TestWindowsManagedShellBlockedInputDisconnectStopsAndJoinsWriter(t *testing
 			stop() // Also release the pipe if the regression fails.
 			select {
 			case <-done:
+				if trigger == "interrupt" {
+					select {
+					case <-interrupted:
+						t.Error("blocked paste must close without a native interrupt")
+					default:
+					}
+				}
 				select {
 				case <-writeReturned:
 				default:
@@ -356,5 +358,79 @@ func TestWindowsSynchronousPipeCloseUnblocksInputWrite(t *testing.T) {
 	case <-closeReturned:
 	case <-time.After(time.Second):
 		t.Error("input close did not finish")
+	}
+}
+
+func TestWindowsManagedShellStopsPendingPasteBeforeNativeInterrupt(t *testing.T) {
+	agentConn, peer := net.Pipe()
+	defer agentConn.Close()
+	defer peer.Close()
+	_ = peer.SetDeadline(time.Now().Add(3 * time.Second))
+	outputRead, outputWrite := io.Pipe()
+	defer outputRead.Close()
+	defer outputWrite.Close()
+	firstEntered, firstReturned := make(chan struct{}), make(chan struct{})
+	releaseFirst := make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseFirst) })
+	defer release()
+	secondAttempted, interrupted := make(chan struct{}), make(chan struct{})
+	interrupt := func() {
+		close(interrupted)
+		// A real console interrupt can release an application's backpressure.
+		// Keep this callback open long enough for an unsafe writer to resume.
+		release()
+		select {
+		case <-secondAttempted:
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	done := make(chan int, 1)
+	go func() {
+		done <- serveWindowsPTYShell(agentConn, bufio.NewReader(agentConn), outputRead, "cmd.exe", testLegacyMarker,
+			func(data []byte) {
+				if string(data) == "first" {
+					close(firstEntered)
+					<-releaseFirst
+					close(firstReturned)
+				} else if string(data) == "second" {
+					close(secondAttempted)
+				}
+			}, interrupt, func([]byte) {}, release, make(chan int), nil)
+	}()
+	go func() {
+		for {
+			if _, err := protocol.ReadFrame(peer); err != nil {
+				return
+			}
+		}
+	}()
+	if err := protocol.WriteFrame(peer, protocol.Frame{Type: protocol.FrameStdin, Data: []byte("first")}); err != nil {
+		t.Fatal(err)
+	}
+	<-firstEntered
+	for _, data := range [][]byte{[]byte("second"), {0x03}} {
+		if err := protocol.WriteFrame(peer, protocol.Frame{Type: protocol.FrameStdin, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pending paste cancellation did not stop the session")
+	}
+	select {
+	case <-secondAttempted:
+		t.Error("queued paste resumed after cancellation")
+	default:
+	}
+	select {
+	case <-interrupted:
+		t.Error("forced-close cancellation invoked native interrupt before teardown")
+	default:
+	}
+	select {
+	case <-firstReturned:
+	default:
+		t.Error("pending input writer was not joined")
 	}
 }
