@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/qinyongliang/linksphere/internal/protocol"
 	"github.com/qinyongliang/linksphere/internal/store"
 	gossh "golang.org/x/crypto/ssh"
@@ -92,6 +94,8 @@ type terminalSession struct {
 	promptSeen             bool
 	directoryPending       bool
 	activeCommands         int
+	agentCommandStatus     bool
+	agentStatusUnsupported bool
 }
 
 type terminalScreenBuffer struct {
@@ -448,6 +452,8 @@ type terminalCommandWaiter struct {
 	done      chan int
 	completed bool
 	exitCode  int
+	err       error
+	framed    bool
 }
 
 type terminalIntegrationEvent struct {
@@ -577,11 +583,26 @@ func (s *terminalSession) trySendCommandLocked(ctx context.Context, command stri
 		return terminalCommandResult{}, false, err
 	}
 	s.mu.Lock()
+	if s.agentCommandStatus {
+		waiter.id = uuid.NewString()
+		waiter.framed = true
+	}
 	s.commandWaiters = append(s.commandWaiters, waiter)
+	input := s.input
 	s.mu.Unlock()
 	defer s.removeCommandWaiter(waiter)
-	if err := s.writeInput(historySuppressedTerminalCommand(command) + "\r"); err != nil {
-		return terminalCommandResult{}, false, err
+	var sendErr error
+	if waiter.id != "" {
+		if writer, ok := input.(*agentSessionInput); ok {
+			sendErr = writer.writeCommand(protocol.ShellCommand{ID: waiter.id, Command: command})
+		} else {
+			sendErr = errors.New("session command transport unavailable")
+		}
+	} else {
+		sendErr = s.writeInput(historySuppressedTerminalCommand(command) + "\r")
+	}
+	if sendErr != nil {
+		return terminalCommandResult{ExitCode: 255}, false, sendErr
 	}
 	result, err := collectCommandOutput(ctx, s.ctx, waiter, sinks...)
 	if ctx.Err() != nil && s.ctx.Err() == nil {
@@ -614,6 +635,9 @@ func (s *terminalSession) commandReadinessError() error {
 	}
 	if s.input == nil {
 		return errTerminalSessionInputWait
+	}
+	if s.agentStatusUnsupported {
+		return errors.New("Windows shell does not support reliable command status; update the Agent and use CMD")
 	}
 	if s.managed && (!s.promptReady || s.directoryPending) {
 		return errTerminalSessionInputWait
@@ -667,7 +691,7 @@ func collectCommandOutput(ctx, sessionCtx context.Context, waiter *terminalComma
 				}
 				break
 			}
-			return terminalCommandResult{Output: stripCommandEcho(out.String(), waiter.command), ExitCode: code}, nil
+			return terminalCommandResult{Output: stripCommandEcho(out.String(), waiter.command), ExitCode: code}, waiter.err
 		case <-ctx.Done():
 			return terminalCommandResult{Output: out.String(), ExitCode: 255}, ctx.Err()
 		case <-sessionCtx.Done():
@@ -759,7 +783,7 @@ func (s *terminalSession) writeOutput(typ string, data []byte) {
 			}
 		}
 		for _, event := range events {
-			if event.Kind == "D" && (waiter.id == "" || event.ID == "" || event.ID == waiter.id) {
+			if !waiter.framed && event.Kind == "D" && (waiter.id == "" || event.ID == waiter.id) {
 				waiter.completed = true
 				waiter.exitCode = event.ExitCode
 				if s.managed {
@@ -770,7 +794,7 @@ func (s *terminalSession) writeOutput(typ string, data []byte) {
 				default:
 				}
 			}
-			if s.managed && event.Kind == "P" && event.Directory != "" && waiter.completed {
+			if !waiter.framed && s.managed && event.Kind == "P" && event.Directory != "" && waiter.completed {
 				select {
 				case waiter.done <- waiter.exitCode:
 				default:
@@ -951,19 +975,20 @@ func (s *terminalSession) setDirectInput(stdin io.WriteCloser, session *gossh.Se
 }
 
 func (s *terminalSession) setAgentInput(stream io.WriteCloser) {
+	writer := &agentSessionInput{stream: stream}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		_ = stream.Close()
 		return
 	}
-	s.input = agentSessionInput{stream: stream}
+	s.input = writer
 	s.closeInput = func() { _ = stream.Close() }
 	s.resize = func(cols, rows int) {
 		var data [8]byte
 		binary.BigEndian.PutUint32(data[0:4], uint32(cols))
 		binary.BigEndian.PutUint32(data[4:8], uint32(rows))
-		_ = protocol.WriteFrame(stream, protocol.Frame{Type: protocol.FrameResize, Data: data[:]})
+		_ = writer.writeFrame(protocol.Frame{Type: protocol.FrameResize, Data: data[:]})
 	}
 	cols, rows := s.cols, s.rows
 	s.mu.Unlock()
@@ -971,19 +996,66 @@ func (s *terminalSession) setAgentInput(stream io.WriteCloser) {
 		var data [8]byte
 		binary.BigEndian.PutUint32(data[0:4], uint32(cols))
 		binary.BigEndian.PutUint32(data[4:8], uint32(rows))
-		_ = protocol.WriteFrame(stream, protocol.Frame{Type: protocol.FrameResize, Data: data[:]})
+		_ = writer.writeFrame(protocol.Frame{Type: protocol.FrameResize, Data: data[:]})
 	}
 }
 
 type agentSessionInput struct {
+	mu     sync.Mutex
 	stream io.Writer
 }
 
-func (w agentSessionInput) Write(data []byte) (int, error) {
-	if err := protocol.WriteFrame(w.stream, protocol.Frame{Type: protocol.FrameStdin, Data: append([]byte(nil), data...)}); err != nil {
+func (w *agentSessionInput) Write(data []byte) (int, error) {
+	if err := w.writeFrame(protocol.Frame{Type: protocol.FrameStdin, Data: append([]byte(nil), data...)}); err != nil {
 		return 0, err
 	}
 	return len(data), nil
+}
+
+func (w *agentSessionInput) writeFrame(frame protocol.Frame) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return protocol.WriteFrame(w.stream, frame)
+}
+
+func (w *agentSessionInput) writeCommand(command protocol.ShellCommand) error {
+	data, err := json.Marshal(command)
+	if err != nil {
+		return err
+	}
+	return w.writeFrame(protocol.Frame{Type: protocol.FrameCommand, Data: data})
+}
+
+func (s *terminalSession) setAgentCommandStatus(supported, windows bool) {
+	s.mu.Lock()
+	s.agentCommandStatus = supported
+	s.agentStatusUnsupported = windows && !supported
+	s.mu.Unlock()
+}
+
+func (s *terminalSession) completeAgentCommand(data []byte) {
+	var result protocol.ShellCommandResult
+	if json.Unmarshal(data, &result) != nil || result.ID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.agentCommandStatus {
+		return
+	}
+	for _, waiter := range s.commandWaiters {
+		if waiter.id != result.ID || waiter.completed {
+			continue
+		}
+		waiter.completed = true
+		if result.Error != "" {
+			waiter.err = errors.New(result.Error)
+		}
+		select {
+		case waiter.done <- result.ExitCode:
+		default:
+		}
+	}
 }
 
 func newTerminalScreenBuffer(rows int) *terminalScreenBuffer {

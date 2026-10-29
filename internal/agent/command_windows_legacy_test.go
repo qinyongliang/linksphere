@@ -3,15 +3,10 @@
 package agent
 
 import (
-	"bufio"
-	"bytes"
-	"io"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/qinyongliang/linksphere/internal/protocol"
 )
 
 const testLegacyMarker = "__GOSSHD_0123456789abcdef0123456789abcdef__"
@@ -78,6 +73,23 @@ func TestLegacyWindowsPromptDecoderPreservesOrdinaryOutput(t *testing.T) {
 	}
 }
 
+func TestLegacyWindowsPromptDecoderConPTYBottomRowOverwrite(t *testing.T) {
+	record := testLegacyMarker + "7;12:34:56.78;C:\\work" + testLegacyEnd
+	for split := 1; split < len(record); split++ {
+		wrapped := record[:split] + "\r\n\x1b[24;80H" + record[split-1:]
+		decoder := legacyWindowsPromptDecoder{marker: testLegacyMarker}
+		got := decoder.decode(wrapped, true)
+		if !strings.Contains(got, "\x1b]633;D;7\a") || strings.Contains(got, testLegacyMarker) {
+			t.Fatalf("bottom-row overwrite at byte %d: %q", split, got)
+		}
+	}
+	decoder := legacyWindowsPromptDecoder{marker: testLegacyMarker}
+	decoder.decode(record, false)
+	if got := decoder.decode("\x1b[31;120H"+record, false); !strings.Contains(got, "\x1b]633;D;7\a") {
+		t.Fatalf("ordinary bottom-row cursor move suppressed a fast command: %q", got)
+	}
+}
+
 func TestLegacyWindowsPromptDecoderBoundsPendingRecords(t *testing.T) {
 	decoder := legacyWindowsPromptDecoder{marker: testLegacyMarker}
 	input := testLegacyMarker + strings.Repeat("x", legacyWindowsPromptLimit)
@@ -109,30 +121,6 @@ func TestLegacyWindowsPromptDecoderNonFilesystemPrompt(t *testing.T) {
 	got := decoder.decode(testLegacyMarker+"1;2;"+testLegacyEnd, true)
 	if want := "\x1b]633;D;1\a\x1b]633;A\a"; got != want {
 		t.Fatalf("non-filesystem prompt %q, want %q", got, want)
-	}
-}
-
-func TestLegacyWindowsOutputFramingAndEOF(t *testing.T) {
-	input := "before" + testLegacyMarker + "0;stamp;C:\\work" + testLegacyEnd + "after" + testLegacyMarker[:10]
-	var frames bytes.Buffer
-	copyLegacyWindowsReaderToFrame(&frames, protocol.FrameStdout, strings.NewReader(input), testLegacyMarker)
-	reader := bufio.NewReader(&frames)
-	var output strings.Builder
-	for {
-		frame, err := protocol.ReadFrame(reader)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if frame.Type != protocol.FrameStdout {
-			t.Fatalf("frame type: %d", frame.Type)
-		}
-		output.Write(frame.Data)
-	}
-	if want := "before\x1b]633;D;0\a\x1b]633;A\a\x1b]633;P;Cwd=C:\\work\aafter" + testLegacyMarker[:10]; output.String() != want {
-		t.Fatalf("framing: %q, want %q", output.String(), want)
 	}
 }
 

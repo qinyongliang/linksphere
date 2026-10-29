@@ -14,6 +14,7 @@ import (
 	"github.com/qinyongliang/linksphere/internal/protocol"
 
 	winpty "github.com/iamacarpet/go-winpty"
+	"golang.org/x/sys/windows"
 )
 
 func (c *Client) handleWinPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, req protocol.StreamRequest) (err error) {
@@ -43,43 +44,28 @@ func (c *Client) handleWinPTYShell(stream io.ReadWriteCloser, reader *bufio.Read
 	}
 	defer pty.Close()
 
-	if err := protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: true}); err != nil {
+	if err := protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: true, ShellCommandStatus: isCmdShell(c.cfg.Shell)}); err != nil {
 		return err
 	}
 
-	go copyFramesToWinPTY(pty, reader)
-	outputDone := make(chan struct{})
+	exited := make(chan int, 1)
+	processDone := make(chan struct{})
 	go func() {
-		defer close(outputDone)
-		copyLegacyWindowsReaderToFrame(stream, protocol.FrameStdout, pty.StdOut, marker)
+		defer close(processDone)
+		exited <- waitHandleExitCode(pty.GetProcHandle())
 	}()
-
-	code := waitHandleExitCode(pty.GetProcHandle())
-	// Flush buffered prompt/output bytes before the exit frame. WinPTY exits
-	// automatically with its child and closes its output pipe.
-	<-outputDone
-	_ = protocol.WriteFrame(stream, protocol.ExitFrame(code))
-	return nil
-}
-
-func copyFramesToWinPTY(pty *winpty.WinPTY, reader *bufio.Reader) {
-	defer pty.StdIn.Close()
-	for {
-		frame, err := protocol.ReadFrame(reader)
-		if err != nil {
-			return
-		}
-		switch frame.Type {
-		case protocol.FrameStdin:
-			writeWinPTYInput(pty.StdIn, frame.Data)
-		case protocol.FrameResize:
-			if len(frame.Data) == 8 {
-				width := uint32(frame.Data[0])<<24 | uint32(frame.Data[1])<<16 | uint32(frame.Data[2])<<8 | uint32(frame.Data[3])
-				height := uint32(frame.Data[4])<<24 | uint32(frame.Data[5])<<16 | uint32(frame.Data[6])<<8 | uint32(frame.Data[7])
+	code := serveWindowsPTYShell(stream, reader, pty.StdOut, c.cfg.Shell, marker,
+		func(data []byte) { writeWinPTYInput(pty.StdIn, data) },
+		func(data []byte) {
+			if len(data) == 8 {
+				width := uint32(data[0])<<24 | uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
+				height := uint32(data[4])<<24 | uint32(data[5])<<16 | uint32(data[6])<<8 | uint32(data[7])
 				pty.SetSize(width, height)
 			}
-		}
-	}
+		}, func() { stopWindowsProcessTree(windows.Handle(pty.GetProcHandle())) }, exited, nil)
+	<-processDone
+	_ = protocol.WriteFrame(stream, protocol.ExitFrame(code))
+	return nil
 }
 
 func writeWinPTYInput(w io.Writer, data []byte) {

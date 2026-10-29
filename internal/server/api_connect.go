@@ -822,7 +822,8 @@ func (a *App) webDirectTerminal(terminalSession *terminalSession) int {
 }
 
 func (a *App) webAgentTerminal(session *terminalSession) int {
-	reader, stream, err := a.openAgentStreamContext(session.ctx, session.target.AgentID, protocol.StreamRequest{Type: protocol.StreamShell, Width: session.cols, Height: session.rows})
+	var response protocol.StreamResponse
+	reader, stream, err := a.openAgentStreamContext(session.ctx, session.target.AgentID, protocol.StreamRequest{Type: protocol.StreamShell, Width: session.cols, Height: session.rows}, &response)
 	if err != nil {
 		session.writeOutput("error", []byte(err.Error()))
 		return 255
@@ -830,6 +831,8 @@ func (a *App) webAgentTerminal(session *terminalSession) int {
 	defer stream.Close()
 	stopStream := context.AfterFunc(session.ctx, func() { _ = stream.Close() })
 	defer stopStream()
+	info, _ := a.registry.Info(session.target.AgentID)
+	session.setAgentCommandStatus(response.ShellCommandStatus, info.GOOS == "windows")
 	session.setAgentInput(stream)
 	exitCode := 255
 	for {
@@ -842,6 +845,8 @@ func (a *App) webAgentTerminal(session *terminalSession) int {
 			session.writeOutput("output", frame.Data)
 		case protocol.FrameStderr:
 			session.writeOutput("error", frame.Data)
+		case protocol.FrameCommandDone:
+			session.completeAgentCommand(frame.Data)
 		case protocol.FrameExit:
 			exitCode = protocol.ExitCode(frame)
 			return exitCode

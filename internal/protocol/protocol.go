@@ -40,6 +40,10 @@ const (
 	FrameStderr
 	FrameExit
 	FrameResize
+	// FrameCommand is negotiated by ShellCommandStatus. Unlike terminal stdin,
+	// it requests a correlated completion from the persistent shell.
+	FrameCommand
+	FrameCommandDone
 )
 
 type AgentHello struct {
@@ -102,6 +106,7 @@ type FileTransferStatus struct {
 }
 
 type StreamResponse struct {
+	ShellCommandStatus  bool     `json:"shell_command_status,omitempty"`
 	Reuse               bool     `json:"reuse,omitempty"`
 	Size                int64    `json:"size,omitempty"`
 	Peer                bool     `json:"peer,omitempty"`
@@ -116,6 +121,17 @@ type StreamResponse struct {
 	AssignedAgentID     string   `json:"assigned_agent_id,omitempty"`
 	TargetID            string   `json:"target_id,omitempty"`
 	TargetAlias         string   `json:"target_alias,omitempty"`
+}
+
+type ShellCommand struct {
+	ID      string `json:"id"`
+	Command string `json:"command"`
+}
+
+type ShellCommandResult struct {
+	ID       string `json:"id"`
+	ExitCode int    `json:"exit_code"`
+	Error    string `json:"error,omitempty"`
 }
 
 type Frame struct {

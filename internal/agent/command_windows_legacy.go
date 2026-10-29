@@ -5,12 +5,9 @@ package agent
 import (
 	"crypto/sha256"
 	"fmt"
-	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/qinyongliang/linksphere/internal/protocol"
 )
 
 // WinPTY scrapes console cells rather than preserving application OSC bytes.
@@ -24,6 +21,8 @@ type legacyWindowsPromptDecoder struct {
 	redrawing     bool
 	controlBuffer string
 	titleBuffer   string
+	onPrompt      func()
+	onResult      func(id, code string)
 }
 
 const (
@@ -55,6 +54,7 @@ func windowsLegacyInteractiveShellArgs(shell, marker string) []string {
 func normalizedLegacyPrompt(raw string) (string, []int) {
 	var text strings.Builder
 	positions := make([]int, 0, len(raw))
+	overwrite := false
 	for i := 0; i < len(raw); {
 		if raw[i] == '\r' || raw[i] == '\n' {
 			i++
@@ -71,8 +71,25 @@ func normalizedLegacyPrompt(raw string) (string, []int) {
 			if end == len(raw) {
 				break
 			}
+			// At the bottom row ConPTY wraps by redrawing the last column
+			// with an absolute cursor move. That cell is an overwrite, not
+			// another character in the printable record.
+			if raw[end] == 'H' && len(positions) > 0 && strings.Contains(raw[positions[len(positions)-1]+1:i], "\r\n") {
+				parts := strings.Split(raw[i+2:end], ";")
+				if len(parts) == 2 {
+					column, _ := strconv.Atoi(parts[1])
+					overwrite = column > 1
+				}
+			}
 			i = end + 1
 			continue
+		}
+		if overwrite {
+			overwrite = false
+			if raw[i] == raw[positions[len(positions)-1]] {
+				i++
+				continue
+			}
 		}
 		positions = append(positions, i)
 		text.WriteByte(raw[i])
@@ -137,8 +154,15 @@ func (d *legacyWindowsPromptDecoder) writeRaw(out *strings.Builder, raw string) 
 			break
 		}
 		switch input[end] {
-		case 'A', 'H', 'f', 'J':
+		case 'A', 'J':
 			d.redrawing = true
+		case 'H', 'f':
+			// ConPTY also uses absolute moves on ordinary bottom-row wraps.
+			// Only a move home signals a historical screen redraw.
+			position := input[i+2 : end]
+			if position == "" || position == "1;1" || position == "0;0" {
+				d.redrawing = true
+			}
 		case 'h':
 			if input[i:end+1] == "\x1b[?25h" {
 				d.redrawing = false
@@ -259,6 +283,14 @@ func (d *legacyWindowsPromptDecoder) decode(data string, eof bool) string {
 		rawEnd := positions[end+len(endMarker)-1] + 1
 		record := d.pending[rawStart:rawEnd]
 		fields := strings.SplitN(text[start+len(d.marker):end], ";", 3)
+		// Result records are emitted only by the managed CMD status query. The
+		// echoed query is removed before this decoder handles visible output.
+		if len(fields) == 3 && fields[0] == "R" && d.onResult != nil {
+			d.onResult(fields[2], fields[1])
+			d.writeRaw(&out, legacyPromptLayout(record))
+			d.pending = d.pending[rawEnd:]
+			continue
+		}
 		valid := len(fields) == 3 && len(record) <= legacyWindowsPromptLimit
 		code := 0
 		if valid {
@@ -287,26 +319,12 @@ func (d *legacyWindowsPromptDecoder) decode(data string, eof bool) string {
 				if fields[2] != "" {
 					fmt.Fprintf(&out, "\x1b]633;P;Cwd=%s\a", fields[2])
 				}
+				if d.onPrompt != nil {
+					d.onPrompt()
+				}
 			}
 		}
 		d.pending = d.pending[rawEnd:]
 	}
 	return out.String()
-}
-
-func copyLegacyWindowsReaderToFrame(w io.Writer, typ byte, r io.Reader, marker string) {
-	decoder := legacyWindowsPromptDecoder{marker: marker}
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := r.Read(buf)
-		text := decoder.decode(string(buf[:n]), err != nil)
-		if text != "" {
-			if writeErr := protocol.WriteFrame(w, protocol.Frame{Type: typ, Data: []byte(text)}); writeErr != nil {
-				return
-			}
-		}
-		if err != nil {
-			return
-		}
-	}
 }

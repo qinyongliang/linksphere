@@ -180,7 +180,7 @@ func (a *App) openAgentStream(id string, req protocol.StreamRequest) (*bufio.Rea
 	return a.openAgentStreamContext(context.Background(), id, req)
 }
 
-func (a *App) openAgentStreamContext(ctx context.Context, id string, req protocol.StreamRequest) (*bufio.Reader, io.ReadWriteCloser, error) {
+func (a *App) openAgentStreamContext(ctx context.Context, id string, req protocol.StreamRequest, response ...*protocol.StreamResponse) (*bufio.Reader, io.ReadWriteCloser, error) {
 	session, err := a.registry.Get(id)
 	if err != nil {
 		return nil, nil, err
@@ -225,6 +225,9 @@ func (a *App) openAgentStreamContext(ctx context.Context, id string, req protoco
 	if !resp.OK {
 		_ = stream.Close()
 		return nil, nil, errors.New(resp.Error)
+	}
+	if len(response) > 0 && response[0] != nil {
+		*response[0] = resp
 	}
 	return reader, stream, nil
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qinyongliang/linksphere/internal/protocol"
 	"github.com/qinyongliang/linksphere/internal/store"
 )
 
@@ -42,6 +44,53 @@ func TestTerminalIntegrationStripsOSCAndParsesCompletion(t *testing.T) {
 	}
 	if got := session.currentScreen(); strings.Contains(got, "633;D") {
 		t.Fatalf("screen leaked integration sequence: %q", got)
+	}
+}
+
+func TestTerminalFramedCommandRequiresCorrelatedCompletion(t *testing.T) {
+	inputRead, inputWrite := io.Pipe()
+	defer inputRead.Close()
+	defer inputWrite.Close()
+	session := &terminalSession{ctx: context.Background(), clients: map[*terminalWSWriter]bool{}, screen: newTerminalScreenBuffer(24), managed: true, promptReady: true}
+	session.setAgentCommandStatus(true, true)
+	session.setAgentInput(inputWrite)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan terminalCommandAttempt, 1)
+	go func() { done <- session.trySendCommand(ctx, "cmd.exe /d /c exit 7") }()
+	frame, err := protocol.ReadFrame(inputRead)
+	if err != nil || frame.Type != protocol.FrameCommand {
+		t.Fatalf("command frame: %v %v", frame, err)
+	}
+	var command protocol.ShellCommand
+	if json.Unmarshal(frame.Data, &command) != nil || command.ID == "" || command.Command != "cmd.exe /d /c exit 7" {
+		t.Fatalf("invalid command: %s", frame.Data)
+	}
+	session.writeOutput("output", []byte("result\r\n\x1b]633;D;0\a\x1b]633;A\a\x1b]633;P;Cwd=C:\\work\a"))
+	wrong, _ := json.Marshal(protocol.ShellCommandResult{ID: "other-command", ExitCode: 0})
+	session.completeAgentCommand(wrong)
+	select {
+	case result := <-done:
+		t.Fatalf("uncorrelated prompt completed command: %+v", result)
+	case <-time.After(20 * time.Millisecond):
+	}
+	completion, _ := json.Marshal(protocol.ShellCommandResult{ID: command.ID, ExitCode: 7})
+	session.completeAgentCommand(completion)
+	result := <-done
+	if result.Err != nil || result.Result.ExitCode != 7 || !strings.Contains(result.Result.Output, "result") {
+		t.Fatalf("correlated completion: %+v", result)
+	}
+}
+
+func TestTerminalLegacyWindowsStatusIsExplicitlyUnsupported(t *testing.T) {
+	session := &terminalSession{input: io.Discard}
+	session.setAgentCommandStatus(false, true)
+	if err := session.commandReadinessError(); err == nil || !strings.Contains(err.Error(), "reliable command status") {
+		t.Fatalf("legacy Windows status was accepted: %v", err)
+	}
+	session.setAgentCommandStatus(false, false)
+	if err := session.commandReadinessError(); err != nil {
+		t.Fatalf("POSIX terminal was blocked: %v", err)
 	}
 }
 

@@ -178,7 +178,8 @@ func (c *Client) handleConPTYShell(stream io.ReadWriteCloser, reader *bufio.Read
 	}
 	_ = windows.CloseHandle(inRead)
 	_ = windows.CloseHandle(outWrite)
-	defer windows.ClosePseudoConsole(console)
+	closeConsole := sync.OnceFunc(func() { windows.ClosePseudoConsole(console) })
+	defer closeConsole()
 
 	input := os.NewFile(uintptr(inWrite), "gosshd-conpty-input")
 	output := os.NewFile(uintptr(outRead), "gosshd-conpty-output")
@@ -196,14 +197,28 @@ func (c *Client) handleConPTYShell(stream io.ReadWriteCloser, reader *bufio.Read
 	defer attributeList.Delete()
 	defer windows.CloseHandle(process)
 
-	if err := protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: true}); err != nil {
+	if err := protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: true, ShellCommandStatus: isCmdShell(c.cfg.Shell)}); err != nil {
 		return err
 	}
 
-	go copyFramesToConPTY(input, reader, console, processID)
-	go copyLegacyWindowsReaderToFrame(stream, protocol.FrameStdout, output, marker)
-
-	code := waitProcessExitCode(process)
+	exited := make(chan int, 1)
+	processDone := make(chan struct{})
+	go func() {
+		defer close(processDone)
+		exited <- waitProcessExitCode(process)
+	}()
+	code := serveWindowsPTYShell(stream, reader, output, c.cfg.Shell, marker,
+		func(data []byte) { writeConPTYInput(input, data, processID) },
+		func(data []byte) {
+			if len(data) == 8 {
+				width := int16(uint16(data[2])<<8 | uint16(data[3]))
+				height := int16(uint16(data[6])<<8 | uint16(data[7]))
+				if width > 0 && height > 0 {
+					_ = windows.ResizePseudoConsole(console, windows.Coord{X: width, Y: height})
+				}
+			}
+		}, func() { stopWindowsProcessTree(process) }, exited, closeConsole)
+	<-processDone
 	_ = protocol.WriteFrame(stream, protocol.ExitFrame(code))
 	return nil
 }
@@ -330,28 +345,6 @@ func normalizePipeInput(data []byte) []byte {
 		out = append(out, b)
 	}
 	return out
-}
-
-func copyFramesToConPTY(w io.WriteCloser, reader *bufio.Reader, console windows.Handle, processID uint32) {
-	defer w.Close()
-	for {
-		frame, err := protocol.ReadFrame(reader)
-		if err != nil {
-			return
-		}
-		switch frame.Type {
-		case protocol.FrameStdin:
-			writeConPTYInput(w, frame.Data, processID)
-		case protocol.FrameResize:
-			if len(frame.Data) == 8 {
-				width := int16(uint16(frame.Data[2])<<8 | uint16(frame.Data[3]))
-				height := int16(uint16(frame.Data[6])<<8 | uint16(frame.Data[7]))
-				if width > 0 && height > 0 {
-					_ = windows.ResizePseudoConsole(console, windows.Coord{X: width, Y: height})
-				}
-			}
-		}
-	}
 }
 
 func writeConPTYInput(w io.Writer, data []byte, processID uint32) {
