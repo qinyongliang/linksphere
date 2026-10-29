@@ -69,6 +69,7 @@ func TestMCPSessionCmdPreservesContextAndReturnsOutput(t *testing.T) {
 		{"echo %MCP_CONTEXT_TEST%", 7, "persistent"},
 		{"cmd.exe /d /c exit 0", 0, ""},
 		{"cmd.exe /d /c exit -7", -7, ""},
+		{"cmd.exe /d /c exit -2147483648", -2147483648, ""},
 		{"cmd.exe /d /c exit 2147483647", 2147483647, ""},
 		{"cmd.exe /d /c exit 0", 0, ""},
 		{"__linksphere_nonexistent_command__", 9009, ""},
@@ -113,12 +114,27 @@ func TestMCPSessionCmdWaitsForInteractiveInput(t *testing.T) {
 	if err := session.writeInput("answer\r"); err != nil {
 		t.Fatal(err)
 	}
-	if run := <-done; run.Err != nil || run.ExitCode != 0 {
-		t.Fatalf("interactive command: %+v", run)
+	if run := <-done; run.Err == nil || run.ExitCode != 255 || !strings.Contains(run.Err.Error(), "open a new session") {
+		t.Fatalf("interactive input must make command status explicitly unknown: %+v", run)
 	}
 	run := app.runCommandInTerminalSession(ctx, session, "echo %MCP_REPLY%", terminalSessionCommandOptions{UserID: user.ID})
-	if run.Err != nil || !strings.Contains(run.Output, "answer") {
-		t.Fatalf("interactive input changed: %+v", run)
+	if run.Err == nil || !strings.Contains(run.Err.Error(), "open a new session") {
+		t.Fatalf("ambiguous shell accepted another managed command: %+v", run)
+	}
+	if err := session.writeInput("echo %MCP_REPLY%\r"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for strings.Count(session.currentScreen(), "answer") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if strings.Count(session.currentScreen(), "answer") < 2 {
+		t.Fatalf("manual interactive input/output stopped working: %q", session.currentScreen())
+	}
+	freshApp, freshUser, freshSession, freshCtx := windowsMCPSession(t)
+	fresh := freshApp.runCommandInTerminalSession(freshCtx, freshSession, "cmd.exe /d /c exit 7", terminalSessionCommandOptions{UserID: freshUser.ID})
+	if fresh.Err != nil || fresh.ExitCode != 7 {
+		t.Fatalf("new session did not restore reliable commands: %+v", fresh)
 	}
 }
 
@@ -141,14 +157,59 @@ func TestMCPSessionCmdResizeDoesNotCompleteRunningCommand(t *testing.T) {
 	}
 }
 
-func TestMCPSessionCmdRejectsShadowedStatus(t *testing.T) {
+func TestMCPSessionCmdReadsNativeStatusDespiteShadowedVariable(t *testing.T) {
 	app, user, session, ctx := windowsMCPSession(t)
 	if run := app.runCommandInTerminalSession(ctx, session, "set ERRORLEVEL=0", terminalSessionCommandOptions{UserID: user.ID}); run.Err != nil {
 		t.Fatal(run.Err)
 	}
 	run := app.runCommandInTerminalSession(ctx, session, "cmd.exe /d /c exit 7", terminalSessionCommandOptions{UserID: user.ID})
-	if run.Err == nil || run.ExitCode != 255 {
-		t.Fatalf("shadowed status was reported as known: %+v", run)
+	if run.Err != nil || run.ExitCode != 7 {
+		t.Fatalf("shadow variable replaced native status: %+v", run)
+	}
+}
+
+func TestMCPSessionCmdStatusQueryDoesNotExecuteEnvironmentValue(t *testing.T) {
+	app, user, session, ctx := windowsMCPSession(t)
+	run := func(command string) terminalSessionCommandRun {
+		result := app.runCommandInTerminalSession(ctx, session, command, terminalSessionCommandOptions{UserID: user.ID})
+		if result.Err != nil {
+			t.Fatalf("%s: %+v", command, result)
+		}
+		return result
+	}
+	escape := strings.NewReplacer("^", "^^", "&", "^&", "|", "^|", "<", "^<", ">", "^>", `"`, `^"`, "(", "^(", ")", "^)")
+	for _, value := range []string{`0&set MCP_UNEXPECTED=changed&rem ignored`, `0"|set MCP_UNEXPECTED=changed|rem "`, `0">nul&set MCP_UNEXPECTED=changed&rem "`} {
+		run("set MCP_UNEXPECTED=")
+		// Escape the assignment so the complete hostile value is data in the
+		// persistent CMD environment, including quotes and redirection syntax.
+		run("set ERRORLEVEL=" + escape.Replace(value))
+		if result := run("cmd.exe /d /c exit 7"); result.ExitCode != 7 {
+			t.Fatalf("environment data replaced native exit status: %+v", result)
+		}
+		if valueOutput := run("set ERRORLEVEL"); !strings.Contains(valueOutput.Output, value) {
+			t.Fatalf("status query changed the environment value: %q", valueOutput.Output)
+		}
+		run("set ERRORLEVEL=")
+		observed := run("echo %MCP_UNEXPECTED%")
+		if strings.Contains(observed.Output, "changed") {
+			t.Fatalf("status query executed environment data: %+v", observed)
+		}
+	}
+}
+
+func TestMCPSessionCmdManualInputCannotReportAnotherCommandsStatus(t *testing.T) {
+	app, user, session, ctx := windowsMCPSession(t)
+	done := make(chan terminalSessionCommandRun, 1)
+	go func() {
+		done <- app.runCommandInTerminalSession(ctx, session, "ping -n 2 127.0.0.1 >nul & cmd.exe /d /c exit 7", terminalSessionCommandOptions{UserID: user.ID})
+	}()
+	time.Sleep(150 * time.Millisecond)
+	if err := session.writeInput("cmd.exe /d /c exit 0\r"); err != nil {
+		t.Fatal(err)
+	}
+	result := <-done
+	if result.Err == nil || result.ExitCode != 255 {
+		t.Fatalf("manual command contaminated managed status: %+v", result)
 	}
 }
 

@@ -66,8 +66,9 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 	}()
 
 	var active *protocol.ShellCommand
+	manualContaminated := false
 	var queuedInput []byte
-	var query, queryOutput string
+	var query, queryOutput, queryID string
 	var queryTimer *time.Timer
 	var queryDeadline <-chan time.Time
 	var exitTimer *time.Timer
@@ -84,10 +85,10 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 	}()
 	ready, prompts := false, 0
 	decoder := legacyWindowsPromptDecoder{marker: marker, onPrompt: func() { prompts++ }, onResult: func(string, string) {}}
-	var probe *legacyWindowsPromptDecoder
+	var queryBase legacyWindowsPromptDecoder
 	var result protocol.ShellCommandResult
-	queryReady, resultSeen := false, false
-	validating, candidate := false, 0
+	var lower, upper, threshold int64
+	const manualStatusError = "command exit status is unknown after manual input; open a new session for reliable command execution"
 	writeOutput := func(text string) error {
 		if text == "" {
 			return nil
@@ -102,6 +103,18 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 		return protocol.WriteFrame(stream, protocol.Frame{Type: protocol.FrameCommandDone, Data: data})
 	}
 	markBusy := func() error { return writeOutput("\x1b]633;C\a") }
+	startQuery := func() {
+		threshold = lower + (upper-lower+1)/2
+		// A resize can replay result records from earlier thresholds too.
+		// Match this exact query, independently of the command completion ID.
+		queryID = active.ID + ":" + strconv.FormatInt(threshold, 10)
+		query = windowsCommandStatusQuery(marker, queryID, threshold)
+		queryOutput = ""
+		queryBase = cloneWindowsPromptDecoder(&decoder)
+		queryTimer = time.NewTimer(windowsCommandQueryTimeout)
+		queryDeadline = queryTimer.C
+		writeInput([]byte(query + "\r"))
+	}
 	for {
 		select {
 		case incoming := <-frames:
@@ -120,6 +133,8 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 					failure = "managed CMD commands must contain one command line"
 				} else if !isCmdShell(shell) {
 					failure = "shell does not support reliable command status"
+				} else if manualContaminated {
+					failure = manualStatusError
 				} else if !ready || active != nil {
 					failure = "terminal shell is busy"
 				}
@@ -145,6 +160,11 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 					continue
 				}
 				if len(frame.Data) > 0 {
+					if active != nil && strings.Trim(string(frame.Data), "\x03") != "" {
+						// Bytes can be either application stdin or a queued shell
+						// command. Never send a query into that ambiguous input queue.
+						manualContaminated = true
+					}
 					ready = false
 					if markBusy() != nil {
 						return 255
@@ -162,9 +182,14 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 				}
 				// Reparse the short query transcript after removing its complete
 				// echo. A fragmented echo contains result-shaped records itself.
-				queryReady, resultSeen = false, false
-				result.ExitCode, result.Error = 255, ""
-				probe = &legacyWindowsPromptDecoder{marker: marker, onResult: probe.onResult, onPrompt: probe.onPrompt}
+				queryReady, resultBit := false, -1
+				probe := cloneWindowsPromptDecoder(&queryBase)
+				probe.onPrompt = func() { queryReady = true }
+				probe.onResult = func(id, bit string) {
+					if id == queryID && (bit == "0" || bit == "1") {
+						resultBit, _ = strconv.Atoi(bit)
+					}
+				}
 				visible := filterWindowsQueryEcho(queryOutput, query)
 				probe.decode(visible, chunk.err != nil)
 				if queryReady {
@@ -175,16 +200,20 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 						return 255
 					}
 					queryTimer.Stop()
-					if !resultSeen {
+					if resultBit < 0 {
 						result.Error = "CMD command exit status is unavailable"
 					}
-					if !validating && result.Error == "" {
-						candidate, validating = result.ExitCode, true
-						query, queryOutput = windowsCommandValidationQuery(marker, active.ID, candidate), ""
-						queryTimer = time.NewTimer(windowsCommandQueryTimeout)
-						queryDeadline = queryTimer.C
-						writeInput([]byte(query + "\r"))
-						continue
+					if result.Error == "" {
+						if resultBit == 1 {
+							lower = threshold
+						} else {
+							upper = threshold - 1
+						}
+						if lower != upper {
+							startQuery()
+							continue
+						}
+						result.ExitCode = int(lower)
 					}
 					if complete(result) != nil {
 						return 255
@@ -208,24 +237,16 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 				if prompts > 0 {
 					ready = true
 					if active != nil {
-						query = "@echo " + marker + "R;%errorlevel%;" + active.ID + legacyWindowsPromptEnd(marker)
-						result = protocol.ShellCommandResult{ID: active.ID, ExitCode: 255}
-						queryReady, resultSeen = false, false
-						validating = false
-						probe = &legacyWindowsPromptDecoder{marker: marker, onResult: func(id, code string) {
-							if id != active.ID || code == "%errorlevel%" {
-								return
+						if manualContaminated {
+							if complete(protocol.ShellCommandResult{ID: active.ID, ExitCode: 255, Error: manualStatusError}) != nil {
+								return 255
 							}
-							resultSeen = true
-							if value, err := strconv.ParseInt(code, 10, 32); err == nil && (!validating || int(value) == candidate) {
-								result.ExitCode = int(value)
-							} else {
-								result.Error = "CMD command exit status is unavailable"
-							}
-						}, onPrompt: func() { queryReady = true }}
-						queryTimer = time.NewTimer(windowsCommandQueryTimeout)
-						queryDeadline = queryTimer.C
-						writeInput([]byte(query + "\r"))
+							active = nil
+						} else {
+							result = protocol.ShellCommandResult{ID: active.ID, ExitCode: 255}
+							lower, upper = -2147483648, 2147483647
+							startQuery()
+						}
 					}
 				}
 			}
@@ -257,15 +278,22 @@ func serveWindowsPTYShell(stream io.ReadWriteCloser, reader *bufio.Reader, outpu
 	}
 }
 
-// ERRORLEVEL may be shadowed by an environment variable. IF ERRORLEVEL reads
-// CMD's actual signed status; validate the expansion without changing either
-// the status or that variable. IF and ECHO preserve the previous status.
-func windowsCommandValidationQuery(marker, id string, code int) string {
-	query := "@if errorlevel " + strconv.Itoa(code) + " "
-	if code < 2147483647 {
-		query += "if not errorlevel " + strconv.Itoa(code+1) + " "
+// IF ERRORLEVEL reads CMD's actual signed status even when an environment
+// variable shadows it. Binary search uses trusted numeric constants only;
+// expanding an environment value here would turn data into executable syntax.
+// IF and ECHO preserve both the native status and the persistent environment.
+func windowsCommandStatusQuery(marker, id string, threshold int64) string {
+	return "@if errorlevel " + strconv.FormatInt(threshold, 10) + " (echo " + marker + "R;1;" + id + legacyWindowsPromptEnd(marker) + ") else echo " + marker + "R;0;" + id + legacyWindowsPromptEnd(marker)
+}
+
+func cloneWindowsPromptDecoder(source *legacyWindowsPromptDecoder) legacyWindowsPromptDecoder {
+	clone := *source
+	clone.seenPrompts = make(map[[32]byte]struct{}, len(source.seenPrompts))
+	for key := range source.seenPrompts {
+		clone.seenPrompts[key] = struct{}{}
 	}
-	return query + "echo " + marker + "R;" + strconv.Itoa(code) + ";" + id + legacyWindowsPromptEnd(marker)
+	clone.promptOrder = append([][32]byte(nil), source.promptOrder...)
+	return clone
 }
 
 // ConPTY/WinPTY can wrap the echoed input and insert cursor controls anywhere
