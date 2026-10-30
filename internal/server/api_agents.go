@@ -261,12 +261,17 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 SERVICE
-  if load_state="$(systemctl show --property=LoadState --value gosshd-agent.service)"; then
+  # Keep the property name: older systemd releases do not support --value.
+  if load_state="$(systemctl show --property=LoadState gosshd-agent.service)"; then
     :
   else
-    [ "$load_state" = not-found ] || { echo 'Cannot inspect the existing agent service.' >&2; exit 1; }
+    [ "$load_state" = LoadState=not-found ] || { echo 'Cannot inspect the existing agent service.' >&2; exit 1; }
   fi
-  if [ "$load_state" != not-found ]; then systemctl stop gosshd-agent; fi
+  case "$load_state" in
+    LoadState=not-found) ;;
+    LoadState=loaded|LoadState=masked|LoadState=error|LoadState=bad-setting|LoadState=merged|LoadState=stub) systemctl stop gosshd-agent ;;
+    *) echo 'Cannot inspect the existing agent service.' >&2; exit 1 ;;
+  esac
   stop_agent_processes
   mv -f "$tmp" "$agent_target"
   mkdir -p /etc/systemd/system

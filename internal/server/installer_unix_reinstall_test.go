@@ -44,7 +44,18 @@ func newUnixInstallFixture(t *testing.T, platform string) *unixInstallFixture {
 		"curl": `url=''; output=''; while [ "$#" -gt 0 ]; do case "$1" in -o) output="$2"; shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
 case "$url" in *.sha256) if [ "${TEST_BAD_SHA:-0}" = 1 ]; then printf '%064d\n' 0; else sha256sum "$TEST_BINARY" | awk '{print $1}'; fi;; *) cp "$TEST_BINARY" "$output";; esac`,
 		"systemctl": `printf 'systemctl %s\n' "$*" >> "$TEST_EVENTS"
-case "$1" in show) echo "${TEST_LOAD_STATE:-loaded}";; stop) [ "${TEST_STOP_FAIL:-0}" != 1 ];; esac`,
+case " $* " in *' --value '*) if [ "${TEST_SYSTEMCTL_LEGACY:-0}" = 1 ]; then echo 'systemctl: unrecognized option --value' >&2; exit 1; fi;; esac
+case "$1" in
+show)
+  if [ "${TEST_SHOW_OUTPUT+x}" = x ]; then
+    printf '%s\n' "$TEST_SHOW_OUTPUT"
+  else
+    case " $* " in *' --value '*) echo "${TEST_LOAD_STATE:-loaded}";; *) echo "LoadState=${TEST_LOAD_STATE:-loaded}";; esac
+  fi
+  exit "${TEST_SHOW_STATUS:-0}"
+  ;;
+stop) [ "${TEST_STOP_FAIL:-0}" != 1 ];;
+esac`,
 		"launchctl": `printf 'launchctl %s\n' "$*" >> "$TEST_EVENTS"
 case "$1" in print) if [ "${TEST_LOAD_STATE:-loaded}" = not-found ] && [ ! -f "$TEST_EVENTS.bootstrapped" ]; then exit 1; fi; echo 'state = running';; bootstrap) touch "$TEST_EVENTS.bootstrapped";; bootout) [ "${TEST_STOP_FAIL:-0}" != 1 ];; esac`,
 		"lsof":   `exit 1`,
@@ -178,6 +189,59 @@ func TestUnixInstallerFailurePreservesExistingFiles(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestUnixInstallerLegacySystemctl(t *testing.T) {
+	for _, tc := range []struct {
+		name, output, status string
+		wantStop, wantError  bool
+	}{
+		{name: "existing", output: "LoadState=loaded", status: "0", wantStop: true},
+		{name: "missing", output: "LoadState=not-found", status: "0"},
+		{name: "missing-nonzero", output: "LoadState=not-found", status: "1"},
+		{name: "manager-error", output: "", status: "1", wantError: true},
+		{name: "loaded-error", output: "LoadState=loaded", status: "1", wantError: true},
+		{name: "empty-output", output: "", status: "0", wantError: true},
+		{name: "unrelated-output", output: "ActiveState=active", status: "0", wantError: true},
+		{name: "duplicate-output", output: "LoadState=not-found\nLoadState=loaded", status: "0", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newUnixInstallFixture(t, "Linux")
+			unit := filepath.Join(f.root, "etc/systemd/system/gosshd-agent.service")
+			identity := filepath.Join(f.root, "var/lib/gosshd/agent.json")
+			if err := os.MkdirAll(filepath.Dir(identity), 0700); err != nil {
+				t.Fatal(err)
+			}
+			for path, body := range map[string]string{f.target: "old-binary", unit: "old-unit", identity: "stable-identity"} {
+				if err := os.WriteFile(path, []byte(body), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, err := f.run("install", "TEST_SYSTEMCTL_LEGACY=1", "TEST_SHOW_OUTPUT="+tc.output, "TEST_SHOW_STATUS="+tc.status)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("installer error = %v, wantError = %v\n%s", err, tc.wantError, out)
+			}
+			events := f.eventLog(t)
+			if tc.wantError {
+				for path, want := range map[string]string{f.target: "old-binary", unit: "old-unit"} {
+					if body, _ := os.ReadFile(path); string(body) != want {
+						t.Fatalf("inspection failure changed %s", path)
+					}
+				}
+				if strings.Contains(events, "stop ") || strings.Contains(events, "replace ") || strings.Contains(events, "restart ") {
+					t.Fatalf("inspection failure changed service: %s", events)
+				}
+			} else if strings.Contains(events, "systemctl stop gosshd-agent") != tc.wantStop {
+				t.Fatalf("unexpected service stop: %s", events)
+			}
+			if body, _ := os.ReadFile(identity); string(body) != "stable-identity" {
+				t.Fatal("identity replaced")
+			}
+			if files, err := filepath.Glob(filepath.Join(filepath.Dir(f.target), ".gosshd-agent-download.*")); err != nil || len(files) != 0 {
+				t.Fatalf("staging files remain: %v, %v", files, err)
+			}
+		})
 	}
 }
 func TestUnixInstallerRunStopsOnlyMatchingExecutable(t *testing.T) {

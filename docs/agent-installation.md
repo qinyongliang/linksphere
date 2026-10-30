@@ -12,6 +12,8 @@ The generated installers support foreground runs and managed background installa
 
 Linux uses systemd; macOS uses the `com.gosshd.agent` system LaunchDaemon; Windows uses the `gosshd-agent` service. Android uses Termux services or the root controller. Unix and Android binaries are replaced by renaming a verified staging file rather than writing over a running executable. Foreground re-runs stop only the matching runtime installation, not a separate system service; Android foreground and background modes share one installation directory and therefore stop its existing supervisor first.
 
+The Linux installer reads the named `LoadState` property so it also works with older systemd releases that lack `systemctl --value`. A missing service permits a fresh install; an inspection failure aborts before stopping or replacing the installed Agent.
+
 Stopping or replacing an Agent interrupts its active sessions. Run the installer from a local terminal or an independent SSH/RDP connection, not from a terminal hosted by the Agent being stopped: the service manager may terminate that installer along with the old Agent.
 
 A failed checksum or stop does not replace the installed binary. A later installation or startup error is reported; automatic rollback is not provided. Fix the reported error and rerun the installer.
