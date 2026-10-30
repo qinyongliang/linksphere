@@ -291,3 +291,132 @@ func TestMCPSessionMultilineCancellationStopsChildAndRemainingLines(t *testing.T
 		t.Fatalf("cancelled session could not run next command: %+v", result)
 	}
 }
+
+func TestMCPSessionMultilineInterruptsChildThatHandlesSIGINT(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	app, user, target := mcpSessionFixture(t)
+	attachTunnelAgent(t, app, target.AgentID, agent.Config{Shell: "/bin/bash"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := app.createMCPSession(ctx, user, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.close("")
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
+	shellPIDPath := filepath.Join(home, "shell.pid")
+	if result := session.trySendCommand(ctx, "printf '%s' \"$$\" > "+quote(shellPIDPath)); result.Err != nil || result.Result.ExitCode != 0 {
+		t.Fatalf("record owned shell pid: %+v", result)
+	}
+	shellPID, err := os.ReadFile(shellPIDPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPath, childPIDPath, handledPath := filepath.Join(home, "child.sh"), filepath.Join(home, "child.pid"), filepath.Join(home, "handled")
+	handler := "printf handled > " + quote(handledPath) + "; exit 0"
+	child := "trap " + quote(handler) + " INT\nprintf '%s' \"$$\" > " + quote(childPIDPath) + "\nsleep 5\n"
+	if err := os.WriteFile(childPath, []byte(child), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client := mcpSessionTestClient(t, app, user)
+	var commandResult *mcp.CallToolResult
+	var commandError error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		commandResult, commandError = client.CallTool(ctx, &mcp.CallToolParams{Name: "session_send_command", Arguments: map[string]any{
+			"session_id": session.id, "command": ":\n/bin/bash " + quote(childPath) + "\nprintf '%s%s\\n' unexpected _handled_tail",
+		}})
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if data, err := os.ReadFile(childPIDPath); err == nil && len(data) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("owned signal-handling child did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "session_interrupt", Arguments: map[string]any{"session_id": session.id}}); err != nil || result.IsError {
+		t.Fatalf("interrupt owned command: %+v, %v", result, err)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("interrupted signal-handling child did not finish")
+	}
+	if commandError != nil {
+		t.Fatal(commandError)
+	}
+	var output mcpSessionCommandOutput
+	decodeMCPSessionResult(t, commandResult, &output)
+	if !output.Allowed || output.ExitCode != 130 || strings.Contains(output.Output, "unexpected_handled_tail") {
+		t.Fatalf("interrupted script continued after its child handled SIGINT: %+v", output)
+	}
+	if data, err := os.ReadFile(handledPath); err != nil || string(data) != "handled" {
+		t.Fatalf("child did not handle SIGINT before exiting zero: %q, %v", data, err)
+	}
+	childPID, err := os.ReadFile(childPIDPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(string(childPID))
+	if err != nil || pid <= 1 {
+		t.Fatalf("invalid owned child pid %q: %v", childPID, err)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("interrupted signal-handling child remains: %v", err)
+	}
+	if result := session.trySendCommand(ctx, "printf '%s' \"$$\" > "+quote(shellPIDPath)+"; printf '%s%s\\n' handled _next"); result.Err != nil || result.Result.ExitCode != 0 || !strings.Contains(result.Result.Output, "handled_next") {
+		t.Fatalf("interrupted session could not be reused: %+v", result)
+	}
+	if after, err := os.ReadFile(shellPIDPath); err != nil || string(after) != string(shellPID) {
+		t.Fatalf("interruption replaced the persistent shell: before=%q, after=%q, err=%v", shellPID, after, err)
+	}
+}
+
+func TestMCPSessionMultilineLegacyAgentInterruptFailsBeforeInput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app, user, target := mcpSessionFixture(t)
+	attachTunnelAgent(t, app, target.AgentID, agent.Config{Shell: "/bin/bash"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := app.createMCPSession(ctx, user, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.close("")
+	session.setAgentCommandInterrupt(false)
+	session.mu.Lock()
+	writer := session.input.(*agentSessionInput)
+	session.mu.Unlock()
+	writes := 0
+	stream := writer.stream
+	writer.stream = terminalInputFunc(func(data []byte) (int, error) { writes++; return stream.Write(data) })
+	command := ":\r\nprintf '%s%s\\n' unexpected _legacy_tail"
+	result, err := mcpSessionTestClient(t, app, user).CallTool(ctx, &mcp.CallToolParams{Name: "session_send_command", Arguments: map[string]any{"session_id": session.id, "command": command}})
+	if err != nil || !result.IsError || writes != 0 {
+		t.Fatalf("legacy Agent received unsupported multiline input: result=%+v, err=%v, writes=%d", result, err, writes)
+	}
+	logs, err := app.audit.Repository().ListCommandAuditLogs(ctx, store.AuditLogFilter{UserID: user.ID, TargetID: target.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := 0
+	for _, entry := range logs.Logs {
+		if entry.SessionID == session.id && entry.RequestType == store.RequestExec {
+			commands++
+			if entry.ExitCode == nil || *entry.ExitCode != 255 || entry.Command != command || entry.PolicyDecision != store.DecisionAllow || entry.PolicyReason != "no policy" || entry.EndedAt == nil {
+				t.Fatalf("legacy Agent refusal lost command/audit outcome: %+v", entry)
+			}
+		}
+	}
+	if commands != 1 {
+		t.Fatalf("legacy Agent refusal audit count=%d", commands)
+	}
+	if result := session.trySendCommand(ctx, "printf '%s%s\\n' legacy _single_line"); result.Err != nil || result.Result.ExitCode != 0 || !strings.Contains(result.Result.Output, "legacy_single_line") || writes == 0 {
+		t.Fatalf("legacy Agent lost single-line support: %+v, writes=%d", result, writes)
+	}
+}

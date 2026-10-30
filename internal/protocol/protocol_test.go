@@ -8,6 +8,24 @@ import (
 	"time"
 )
 
+func TestShellInterruptWireCompatibility(t *testing.T) {
+	if FrameStdin != 1 || FrameStdout != 2 || FrameStderr != 3 || FrameExit != 4 || FrameResize != 5 || FrameCommand != 6 || FrameCommandDone != 7 || FrameInterrupt != 8 {
+		t.Fatal("terminal frame wire values changed")
+	}
+	var legacy StreamResponse
+	if err := json.Unmarshal([]byte(`{"ok":true}`), &legacy); err != nil || legacy.ShellCommandInterrupt {
+		t.Fatalf("legacy response enabled interruption: %+v, %v", legacy, err)
+	}
+	data, err := json.Marshal(StreamResponse{OK: true, ShellCommandInterrupt: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response StreamResponse
+	if err := json.Unmarshal(data, &response); err != nil || !response.ShellCommandInterrupt {
+		t.Fatalf("interrupt capability did not round-trip: %s, %v", data, err)
+	}
+}
+
 func TestLoadOrCreateIDStable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.json")
 	first, err := LoadOrCreateID(path)

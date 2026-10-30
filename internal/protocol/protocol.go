@@ -44,6 +44,8 @@ const (
 	// it requests a correlated completion from the persistent shell.
 	FrameCommand
 	FrameCommandDone
+	// FrameInterrupt is negotiated by ShellCommandInterrupt and has no payload.
+	FrameInterrupt
 )
 
 type AgentHello struct {
@@ -106,21 +108,22 @@ type FileTransferStatus struct {
 }
 
 type StreamResponse struct {
-	ShellCommandStatus  bool     `json:"shell_command_status,omitempty"`
-	Reuse               bool     `json:"reuse,omitempty"`
-	Size                int64    `json:"size,omitempty"`
-	Peer                bool     `json:"peer,omitempty"`
-	STUNServers         []string `json:"stun_servers,omitempty"`
-	ListenAddress       string   `json:"listen_address,omitempty"`
-	OK                  bool     `json:"ok"`
-	Error               string   `json:"error,omitempty"`
-	ExitCode            int      `json:"exit_code,omitempty"`
-	ServerVersion       string   `json:"server_version,omitempty"`
-	AgentDownloadURL    string   `json:"agent_download_url,omitempty"`
-	AgentDownloadSHA256 string   `json:"agent_download_sha256,omitempty"`
-	AssignedAgentID     string   `json:"assigned_agent_id,omitempty"`
-	TargetID            string   `json:"target_id,omitempty"`
-	TargetAlias         string   `json:"target_alias,omitempty"`
+	ShellCommandStatus    bool     `json:"shell_command_status,omitempty"`
+	ShellCommandInterrupt bool     `json:"shell_command_interrupt,omitempty"`
+	Reuse                 bool     `json:"reuse,omitempty"`
+	Size                  int64    `json:"size,omitempty"`
+	Peer                  bool     `json:"peer,omitempty"`
+	STUNServers           []string `json:"stun_servers,omitempty"`
+	ListenAddress         string   `json:"listen_address,omitempty"`
+	OK                    bool     `json:"ok"`
+	Error                 string   `json:"error,omitempty"`
+	ExitCode              int      `json:"exit_code,omitempty"`
+	ServerVersion         string   `json:"server_version,omitempty"`
+	AgentDownloadURL      string   `json:"agent_download_url,omitempty"`
+	AgentDownloadSHA256   string   `json:"agent_download_sha256,omitempty"`
+	AssignedAgentID       string   `json:"assigned_agent_id,omitempty"`
+	TargetID              string   `json:"target_id,omitempty"`
+	TargetAlias           string   `json:"target_alias,omitempty"`
 }
 
 type ShellCommand struct {

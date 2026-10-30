@@ -833,6 +833,7 @@ func (a *App) webAgentTerminal(session *terminalSession) int {
 	defer stopStream()
 	info, _ := a.registry.Info(session.target.AgentID)
 	session.setAgentCommandStatus(response.ShellCommandStatus, info.GOOS == "windows")
+	session.setAgentCommandInterrupt(response.ShellCommandInterrupt && info.GOOS != "windows")
 	session.setAgentInput(stream)
 	exitCode := 255
 	for {

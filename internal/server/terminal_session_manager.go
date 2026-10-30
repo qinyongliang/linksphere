@@ -95,6 +95,7 @@ type terminalSession struct {
 	directoryPending       bool
 	activeCommands         int
 	agentCommandStatus     bool
+	agentCommandInterrupt  bool
 	agentStatusUnsupported bool
 	bashSourceSupported    bool
 }
@@ -431,6 +432,22 @@ func (s *terminalSession) resizeTo(cols, rows int) {
 }
 
 func (s *terminalSession) interrupt() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return errTerminalSessionClosed
+	}
+	writer, supported := s.input, s.agentCommandInterrupt
+	if s.managed {
+		s.lastActivity = time.Now().UTC()
+	}
+	s.mu.Unlock()
+	if supported {
+		if agent, ok := writer.(*agentSessionInput); ok {
+			return agent.writeFrame(protocol.Frame{Type: protocol.FrameInterrupt})
+		}
+		return errors.New("session command transport unavailable")
+	}
 	return s.writeInput("\x03")
 }
 
@@ -597,6 +614,10 @@ func (s *terminalSession) trySendCommandLocked(ctx context.Context, command stri
 		waiter.id = uuid.NewString()
 		waiter.framed = true
 	} else {
+		if _, agent := s.input.(*agentSessionInput); agent && s.bashSourceSupported && !s.agentCommandInterrupt && strings.ContainsAny(command, "\r\n") {
+			s.mu.Unlock()
+			return terminalCommandResult{ExitCode: 255}, false, errors.New("multiline Agent commands require negotiated shell interruption; update the Agent and open a new session")
+		}
 		var err error
 		terminalCommand, err = unframedTerminalCommand(command, s.bashSourceSupported)
 		if err != nil {
@@ -1069,6 +1090,12 @@ func (s *terminalSession) setAgentCommandStatus(supported, windows bool) {
 	s.mu.Lock()
 	s.agentCommandStatus = supported
 	s.agentStatusUnsupported = windows && !supported
+	s.mu.Unlock()
+}
+
+func (s *terminalSession) setAgentCommandInterrupt(supported bool) {
+	s.mu.Lock()
+	s.agentCommandInterrupt = supported
 	s.mu.Unlock()
 }
 

@@ -30,6 +30,17 @@ working directory and exported variables as other session commands. If that
 integration is unavailable, update the Agent or open a new Bash session before
 sending a multiline command.
 
+Agent Bash sessions negotiate a dedicated interruption capability. An explicit
+MCP interrupt signals the session's own shell before sending terminal Ctrl+C,
+so an interrupted multiline script does not continue with its remaining lines.
+Older Agents must be updated before they accept multiline commands. Ordinary
+keyboard input, Windows command framing, and direct SSH Ctrl+C keep their
+existing behavior.
+Custom shell signal handlers keep their normal semantics.
+
+Closing an Agent shell session also terminates that session's own shell and
+closes its terminal; it does not stop the Agent process.
+
 These multiline commands run as a sourced Bash script with terminal stdin still
 available. `BASH_SOURCE` and `LINENO` describe that script, a top-level `return`
 ends that command, and process substitution can update `$!`. The persistent

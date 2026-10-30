@@ -124,6 +124,44 @@ func TestTerminalFramedMultilineCommandPreservesPayload(t *testing.T) {
 	}
 }
 
+func TestTerminalAgentInterruptRequiresNegotiatedCapability(t *testing.T) {
+	for _, supported := range []bool{false, true} {
+		var stream terminalInterruptFrameBuffer
+		session := &terminalSession{ctx: context.Background()}
+		session.setAgentInput(&stream)
+		session.setAgentCommandInterrupt(supported)
+		if err := session.interrupt(); err != nil {
+			t.Fatal(err)
+		}
+		frame, err := protocol.ReadFrame(&stream)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if supported {
+			if frame.Type != protocol.FrameInterrupt || len(frame.Data) != 0 {
+				t.Fatalf("negotiated interruption carried terminal input or a payload: %+v", frame)
+			}
+		} else if frame.Type != protocol.FrameStdin || string(frame.Data) != "\x03" {
+			t.Fatalf("legacy interruption changed: %+v", frame)
+		}
+		if err := session.writeInput("typed\x03"); err != nil {
+			t.Fatal(err)
+		}
+		frame, err = protocol.ReadFrame(&stream)
+		if err != nil || frame.Type != protocol.FrameStdin || string(frame.Data) != "typed\x03" {
+			t.Fatalf("ordinary keyboard input changed: %+v, %v", frame, err)
+		}
+		session.closed = true
+		if err := session.interrupt(); !errors.Is(err, errTerminalSessionClosed) || stream.Len() != 0 {
+			t.Fatalf("closed session wrote an interrupt: %v, bytes=%d", err, stream.Len())
+		}
+	}
+}
+
+type terminalInterruptFrameBuffer struct{ bytes.Buffer }
+
+func (b *terminalInterruptFrameBuffer) Close() error { return nil }
+
 func TestTerminalMultilinePolicyAndAuditUseOriginalCommand(t *testing.T) {
 	app, user, target := mcpSessionFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

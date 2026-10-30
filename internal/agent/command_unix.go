@@ -26,7 +26,8 @@ func (c *Client) handleCommand(stream io.ReadWriteCloser, reader *bufio.Reader, 
 	}
 	cmd.Dir = c.cfg.Root
 	cmd.Env = commandEnvironment(os.Environ(), c.cfg.Root)
-	if err := protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: true}); err != nil {
+	shellInterrupt := req.Type == protocol.StreamShell && shellBaseName(c.cfg.Shell) == "bash"
+	if err := protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: true, ShellCommandInterrupt: shellInterrupt}); err != nil {
 		return
 	}
 	if req.Type == protocol.StreamShell && shellBaseName(c.cfg.Shell) == "bash" {
@@ -74,8 +75,27 @@ func (c *Client) handleCommand(stream io.ReadWriteCloser, reader *bufio.Reader, 
 			}
 			finish()
 		}()
+	} else if req.Type == protocol.StreamShell {
+		stop = func() {
+			// Kill only the process started for this stream. Closing its PTY
+			// also unblocks the output reader when the input stream ends.
+			_ = cmd.Process.Kill()
+			_ = ptmx.Close()
+		}
+		defer func() {
+			if !waited {
+				stop()
+				_ = waitExitCode(cmd)
+			}
+		}()
 	}
-	go copyFramesToWriter(ptmx, reader, stop)
+	var interrupt func() error
+	if shellInterrupt {
+		interrupt = func() error {
+			return interruptShell(cmd.Process, ptmx)
+		}
+	}
+	go copyFramesToWriter(ptmx, reader, stop, interrupt)
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := ptmx.Read(buf)
@@ -175,10 +195,24 @@ func shellBaseName(shell string) string {
 	return strings.TrimPrefix(base, "-")
 }
 
-func copyFramesToWriter(w io.Writer, reader *bufio.Reader, onDisconnect ...func()) {
+type shellInterruptProcess interface {
+	Signal(os.Signal) error
+}
+
+func interruptShell(process shellInterruptProcess, terminal io.Writer) error {
+	// A foreground job can consume terminal SIGINT. Notify our own shell first
+	// so it also stops a sourced command, then interrupt the foreground PTY job.
+	if err := process.Signal(os.Interrupt); err != nil {
+		return err
+	}
+	_, err := terminal.Write([]byte{3})
+	return err
+}
+
+func copyFramesToWriter(w io.Writer, reader *bufio.Reader, onDisconnect func(), interrupt func() error) {
 	defer func() {
-		if len(onDisconnect) > 0 && onDisconnect[0] != nil {
-			onDisconnect[0]()
+		if onDisconnect != nil {
+			onDisconnect()
 		}
 	}()
 	for {
@@ -189,6 +223,12 @@ func copyFramesToWriter(w io.Writer, reader *bufio.Reader, onDisconnect ...func(
 		switch frame.Type {
 		case protocol.FrameStdin:
 			_, _ = w.Write(frame.Data)
+		case protocol.FrameInterrupt:
+			if len(frame.Data) == 0 && interrupt != nil {
+				if err := interrupt(); err != nil {
+					return
+				}
+			}
 		case protocol.FrameResize:
 			if len(frame.Data) == 8 {
 				_ = pty.Setsize(w.(*os.File), &pty.Winsize{
