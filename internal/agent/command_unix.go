@@ -43,6 +43,19 @@ func (c *Client) handleCommand(stream io.ReadWriteCloser, reader *bufio.Reader, 
 		_ = protocol.WriteFrame(stream, protocol.ExitFrame(255))
 		return
 	}
+	if req.Type == protocol.StreamShell {
+		pollable, err := interruptiblePTY(ptmx)
+		if err != nil {
+			_ = cmd.Process.Kill()
+			_ = ptmx.Close()
+			_ = waitExitCode(cmd)
+			_ = protocol.WriteFrame(stream, protocol.Frame{Type: protocol.FrameStderr, Data: []byte(err.Error())})
+			_ = protocol.WriteFrame(stream, protocol.ExitFrame(255))
+			return
+		}
+		_ = ptmx.Close()
+		ptmx = pollable
+	}
 	defer ptmx.Close()
 	var stop func()
 	var finish func()
@@ -76,10 +89,34 @@ func (c *Client) handleCommand(stream io.ReadWriteCloser, reader *bufio.Reader, 
 			finish()
 		}()
 	} else if req.Type == protocol.StreamShell {
+		var mu sync.Mutex
+		finished := false
+		finish = func() {
+			mu.Lock()
+			finished = true
+			mu.Unlock()
+		}
 		stop = func() {
-			// Kill only the process started for this stream. Closing its PTY
-			// also unblocks the output reader when the input stream ends.
-			_ = cmd.Process.Kill()
+			mu.Lock()
+			defer mu.Unlock()
+			if finished {
+				return
+			}
+			finished = true
+			// StartWithSize gave this shell its own session and controlling
+			// terminal. Freeze only this closing shell before its foreground
+			// job dies, so it cannot resume a sourced tail between the kills.
+			// The Process handle rejects a late stop after Wait reaped it.
+			if err := cmd.Process.Signal(syscall.SIGSTOP); err == nil {
+				if pgid, err := unix.IoctlGetInt(int(ptmx.Fd()), unix.TIOCGPGRP); err == nil && pgid > 1 && pgid != syscall.Getpgrp() {
+					// A pipeline leader may already have exited while its group
+					// still belongs to this terminal; Getsid then returns ESRCH.
+					if sid, err := unix.Getsid(pgid); err == nil && sid == cmd.Process.Pid || err == unix.ESRCH {
+						_ = syscall.Kill(-pgid, syscall.SIGKILL)
+					}
+				}
+				_ = cmd.Process.Kill()
+			}
 			_ = ptmx.Close()
 		}
 		defer func() {
@@ -87,6 +124,7 @@ func (c *Client) handleCommand(stream io.ReadWriteCloser, reader *bufio.Reader, 
 				stop()
 				_ = waitExitCode(cmd)
 			}
+			finish()
 		}()
 	}
 	var interrupt func() error
@@ -114,6 +152,34 @@ func (c *Client) handleCommand(stream io.ReadWriteCloser, reader *bufio.Reader, 
 		finish()
 	}
 	_ = protocol.WriteFrame(stream, protocol.ExitFrame(code))
+}
+
+func interruptiblePTY(terminal *os.File) (*os.File, error) {
+	raw, err := terminal.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	descriptor := -1
+	var duplicateErr error
+	err = raw.Control(func(fd uintptr) {
+		descriptor, duplicateErr = unix.FcntlInt(fd, unix.F_DUPFD_CLOEXEC, 0)
+		if duplicateErr == nil {
+			duplicateErr = unix.SetNonblock(descriptor, true)
+		}
+	})
+	if err == nil {
+		err = duplicateErr
+	}
+	if err != nil {
+		if descriptor >= 0 {
+			_ = unix.Close(descriptor)
+		}
+		return nil, err
+	}
+	// pty setup calls File.Fd, which makes its File permanently blocking.
+	// A new File over our nonblocking duplicate can interrupt Read on Close;
+	// subsequent Fd calls used for resize do not reset its explicit mode.
+	return os.NewFile(uintptr(descriptor), terminal.Name()), nil
 }
 
 func agentShellCommand(shell string, streamType string) *exec.Cmd {

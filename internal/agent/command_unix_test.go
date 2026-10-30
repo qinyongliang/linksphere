@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/qinyongliang/linksphere/internal/protocol"
+	"golang.org/x/sys/unix"
 )
 
 func TestAgentBashRCDoesNotExportPromptHook(t *testing.T) {
@@ -305,5 +307,74 @@ func TestNonBashShellDoesNotNegotiateInterrupt(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("non-Bash shell did not settle")
+	}
+}
+
+func TestInterruptiblePTYCloseUnblocksReadAfterResize(t *testing.T) {
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer master.Close()
+	defer slave.Close()
+	// Match StartWithSize: pty sizing calls File.Fd and leaves OpenFile's
+	// original poll descriptor blocking before it is handed to our wrapper.
+	if err := pty.Setsize(master, &pty.Winsize{Cols: 80, Rows: 24}); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := interruptiblePTY(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	_ = master.Close()
+	if err := pty.Setsize(terminal, &pty.Winsize{Cols: 111, Rows: 37}); err != nil {
+		t.Fatal(err)
+	}
+	if size, err := pty.GetsizeFull(terminal); err != nil || size.Cols != 111 || size.Rows != 37 {
+		t.Fatalf("new PTY lost resize support: %+v, %v", size, err)
+	}
+	raw, err := terminal.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var descriptorFlags int
+	var descriptorErr error
+	if err := raw.Control(func(fd uintptr) { descriptorFlags, descriptorErr = unix.FcntlInt(fd, unix.F_GETFD, 0) }); err != nil || descriptorErr != nil || descriptorFlags&unix.FD_CLOEXEC == 0 {
+		t.Fatalf("owned duplicate must remain close-on-exec: flags=%d, err=%v, descriptorErr=%v", descriptorFlags, err, descriptorErr)
+	}
+	if err := terminal.SetReadDeadline(time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("new PTY does not support interruptible I/O: %v", err)
+	}
+	started, readDone, closeDone := make(chan struct{}), make(chan error, 1), make(chan error, 1)
+	go func() {
+		close(started)
+		_, err := terminal.Read(make([]byte, 1))
+		readDone <- err
+	}()
+	<-started
+	select {
+	case err := <-readDone:
+		t.Fatalf("empty slave did not hold the PTY read: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	go func() { closeDone <- terminal.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		_ = slave.Close()
+		t.Fatal("PTY close blocked while its slave remained open")
+	}
+	select {
+	case err := <-readDone:
+		if !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("closed PTY read: %v", err)
+		}
+	case <-time.After(time.Second):
+		_ = slave.Close()
+		t.Fatal("PTY read survived close after resize")
 	}
 }

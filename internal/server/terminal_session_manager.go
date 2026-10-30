@@ -1036,13 +1036,16 @@ func (s *terminalSession) setDirectInput(stdin io.WriteCloser, session *gossh.Se
 
 func (s *terminalSession) setAgentInput(stream io.WriteCloser) {
 	writer := &agentSessionInput{stream: stream}
+	// Reserve the first frame before publishing the resize callback. Keep
+	// session.mu free during I/O so closeInput can cancel a blocked write.
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		_ = stream.Close()
 		return
 	}
-	s.input = writer
 	s.closeInput = func() { _ = stream.Close() }
 	s.resize = func(cols, rows int) {
 		var data [8]byte
@@ -1056,8 +1059,13 @@ func (s *terminalSession) setAgentInput(stream io.WriteCloser) {
 		var data [8]byte
 		binary.BigEndian.PutUint32(data[0:4], uint32(cols))
 		binary.BigEndian.PutUint32(data[4:8], uint32(rows))
-		_ = writer.writeFrame(protocol.Frame{Type: protocol.FrameResize, Data: data[:]})
+		_ = protocol.WriteFrame(writer.stream, protocol.Frame{Type: protocol.FrameResize, Data: data[:]})
 	}
+	s.mu.Lock()
+	if !s.closed {
+		s.input = writer
+	}
+	s.mu.Unlock()
 }
 
 type agentSessionInput struct {
