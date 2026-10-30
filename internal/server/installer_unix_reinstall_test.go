@@ -26,6 +26,9 @@ func newUnixInstallFixture(t *testing.T, platform string) *unixInstallFixture {
 	}
 	root := t.TempDir()
 	f := &unixInstallFixture{root: root, target: filepath.Join(root, "usr/local/bin/gosshd-agent"), events: filepath.Join(root, "events"), home: filepath.Join(root, `home <&"' $cash%`)}
+	if platform == "Linux" {
+		f.target = filepath.Join(root, "usr/local/bin/linksphere-agent")
+	}
 	bin := filepath.Join(root, "bin")
 	for _, dir := range []string{bin, f.home, filepath.Dir(f.target), filepath.Join(root, "tmp"), filepath.Join(root, "etc/systemd/system"), filepath.Join(root, "Library/LaunchDaemons")} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
@@ -47,6 +50,7 @@ case "$url" in *.sha256) if [ "${TEST_BAD_SHA:-0}" = 1 ]; then printf '%064d\n' 
 case " $* " in *' --value '*) if [ "${TEST_SYSTEMCTL_LEGACY:-0}" = 1 ]; then echo 'systemctl: unrecognized option --value' >&2; exit 1; fi;; esac
 case "$1" in
 show)
+  if [ "$3" = gosshd-agent.service ]; then echo "LoadState=${TEST_LEGACY_LOAD_STATE:-not-found}"; exit 0; fi
   if [ "${TEST_SHOW_OUTPUT+x}" = x ]; then
     printf '%s\n' "$TEST_SHOW_OUTPUT"
   else
@@ -55,6 +59,7 @@ show)
   exit "${TEST_SHOW_STATUS:-0}"
   ;;
 stop) [ "${TEST_STOP_FAIL:-0}" != 1 ];;
+restart) [ "${TEST_START_FAIL:-0}" != 1 ];;
 esac`,
 		"launchctl": `printf 'launchctl %s\n' "$*" >> "$TEST_EVENTS"
 case "$1" in print) if [ "${TEST_LOAD_STATE:-loaded}" = not-found ] && [ ! -f "$TEST_EVENTS.bootstrapped" ]; then exit 1; fi; echo 'state = running';; bootstrap) touch "$TEST_EVENTS.bootstrapped";; bootout) [ "${TEST_STOP_FAIL:-0}" != 1 ];; esac`,
@@ -65,6 +70,11 @@ case "$1" in print) if [ "${TEST_LOAD_STATE:-loaded}" = not-found ] && [ ! -f "$
 	}
 	for name, body := range commands {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nset -eu\n"+body+"\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if platform == "Linux" {
+		if err := os.WriteFile(filepath.Join(root, "etc/systemd/system/linksphere-agent.service"), []byte("ExecStart="+f.target+" --id-file /example/agent.json\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -119,7 +129,7 @@ func TestUnixInstallerServiceReinstall(t *testing.T) {
 					t.Fatalf("installer: %v\n%s", err, out)
 				}
 				events := f.eventLog(t)
-				stop, start := "systemctl stop gosshd-agent", "systemctl restart gosshd-agent"
+				stop, start := "systemctl stop linksphere-agent", "systemctl restart linksphere-agent"
 				if platform == "Darwin" {
 					stop = "launchctl bootout system/com.gosshd.agent"
 					start = "launchctl bootstrap system "
@@ -208,12 +218,13 @@ func TestUnixInstallerLegacySystemctl(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newUnixInstallFixture(t, "Linux")
-			unit := filepath.Join(f.root, "etc/systemd/system/gosshd-agent.service")
+			unit := filepath.Join(f.root, "etc/systemd/system/linksphere-agent.service")
+			unitBody := "ExecStart=" + f.target + " --id-file /example/agent.json\n"
 			identity := filepath.Join(f.root, "var/lib/gosshd/agent.json")
 			if err := os.MkdirAll(filepath.Dir(identity), 0700); err != nil {
 				t.Fatal(err)
 			}
-			for path, body := range map[string]string{f.target: "old-binary", unit: "old-unit", identity: "stable-identity"} {
+			for path, body := range map[string]string{f.target: "old-binary", unit: unitBody, identity: "stable-identity"} {
 				if err := os.WriteFile(path, []byte(body), 0700); err != nil {
 					t.Fatal(err)
 				}
@@ -224,7 +235,7 @@ func TestUnixInstallerLegacySystemctl(t *testing.T) {
 			}
 			events := f.eventLog(t)
 			if tc.wantError {
-				for path, want := range map[string]string{f.target: "old-binary", unit: "old-unit"} {
+				for path, want := range map[string]string{f.target: "old-binary", unit: unitBody} {
 					if body, _ := os.ReadFile(path); string(body) != want {
 						t.Fatalf("inspection failure changed %s", path)
 					}
@@ -232,14 +243,89 @@ func TestUnixInstallerLegacySystemctl(t *testing.T) {
 				if strings.Contains(events, "stop ") || strings.Contains(events, "replace ") || strings.Contains(events, "restart ") {
 					t.Fatalf("inspection failure changed service: %s", events)
 				}
-			} else if strings.Contains(events, "systemctl stop gosshd-agent") != tc.wantStop {
+			} else if strings.Contains(events, "systemctl stop linksphere-agent") != tc.wantStop {
 				t.Fatalf("unexpected service stop: %s", events)
 			}
 			if body, _ := os.ReadFile(identity); string(body) != "stable-identity" {
 				t.Fatal("identity replaced")
 			}
-			if files, err := filepath.Glob(filepath.Join(filepath.Dir(f.target), ".gosshd-agent-download.*")); err != nil || len(files) != 0 {
+			if files, err := filepath.Glob(filepath.Join(filepath.Dir(f.target), ".*agent-download.*")); err != nil || len(files) != 0 {
 				t.Fatalf("staging files remain: %v, %v", files, err)
+			}
+		})
+	}
+}
+
+func TestLinuxInstallerMigratesLegacyService(t *testing.T) {
+	for _, failure := range []string{"", "foreign-legacy-unit", "foreign-current-unit", "retry-state-conflict", "start-failure"} {
+		t.Run(failure, func(t *testing.T) {
+			f := newUnixInstallFixture(t, "Linux")
+			legacy := filepath.Join(f.root, "usr/local/bin/gosshd-agent")
+			legacyUnit := filepath.Join(f.root, "etc/systemd/system/gosshd-agent.service")
+			currentUnit := filepath.Join(f.root, "etc/systemd/system/linksphere-agent.service")
+			identity := filepath.Join(f.root, "var/lib/gosshd/agent.json")
+			if err := os.MkdirAll(filepath.Dir(identity), 0700); err != nil {
+				t.Fatal(err)
+			}
+			legacyBody := "ExecStart=" + legacy + " --id-file /example/agent.json\n"
+			if failure == "foreign-legacy-unit" {
+				legacyBody = "ExecStart=/example/unrelated-daemon\n"
+			}
+			for path, body := range map[string]string{legacy: "legacy-binary", legacyUnit: legacyBody, identity: "stable-identity", legacy + ".update-state.json": "retry-budget"} {
+				if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			extra := []string{"TEST_SYSTEMCTL_LEGACY=1", "TEST_LEGACY_LOAD_STATE=loaded"}
+			if failure == "foreign-current-unit" {
+				if err := os.WriteFile(currentUnit, []byte("ExecStart=/example/unrelated-daemon\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if failure == "retry-state-conflict" {
+				if err := os.WriteFile(f.target+".update-state.json", []byte("other-budget"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if failure == "start-failure" {
+				extra = append(extra, "TEST_START_FAIL=1")
+			}
+			out, err := f.run("install", extra...)
+			if (err != nil) != (failure != "") {
+				t.Fatalf("installer error = %v, failure = %q\n%s", err, failure, out)
+			}
+			events := f.eventLog(t)
+			if failure != "" {
+				for path, want := range map[string]string{legacy: "legacy-binary", legacyUnit: legacyBody, legacy + ".update-state.json": "retry-budget"} {
+					if body, _ := os.ReadFile(path); string(body) != want {
+						t.Fatalf("failed migration changed legacy file %s", path)
+					}
+				}
+				if strings.Contains(events, "disable gosshd-agent") || (failure != "start-failure" && (strings.Contains(events, "stop ") || strings.Contains(events, "replace "))) {
+					t.Fatalf("failed migration changed service: %s", events)
+				}
+			} else {
+				for _, path := range []string{legacy, legacyUnit, legacy + ".update-state.json"} {
+					if _, err := os.Lstat(path); !os.IsNotExist(err) {
+						t.Fatalf("legacy file remains: %s, %v", path, err)
+					}
+				}
+				if body, _ := os.ReadFile(f.target + ".update-state.json"); string(body) != "retry-budget" {
+					t.Fatal("retry budget not preserved")
+				}
+				unit, _ := os.ReadFile(currentUnit)
+				if !strings.Contains(string(unit), "ExecStart="+f.target+" ") || !strings.Contains(string(unit), filepath.Dir(identity)) {
+					t.Fatalf("wrong service binary/identity: %s", unit)
+				}
+				stop := strings.Index(events, "systemctl stop gosshd-agent")
+				start := strings.Index(events, "systemctl restart linksphere-agent")
+				disable := strings.Index(events, "systemctl disable gosshd-agent")
+				if stop < 0 || stop > strings.Index(events, "replace ") || start < 0 || disable < start {
+					t.Fatalf("unsafe migration order: %s", events)
+				}
+			}
+			if body, _ := os.ReadFile(identity); string(body) != "stable-identity" {
+				t.Fatal("identity changed")
 			}
 		})
 	}

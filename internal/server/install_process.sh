@@ -6,7 +6,11 @@ agent_pid_matches() {
     lsof -t -a -p "$1" -d txt "$agent_target" 2>/dev/null | grep -qx "$1"
   else
     agent_exe="$(readlink "/proc/$1/exe" 2>/dev/null || true)"
-    case "$agent_exe" in "$agent_target"|"$agent_target (deleted)") return 0 ;; *) return 1 ;; esac
+    case "$agent_exe" in "$agent_target"|"$agent_target (deleted)") return 0 ;; esac
+    if [ -n "${legacy_agent_target:-}" ]; then
+      case "$agent_exe" in "$legacy_agent_target"|"$legacy_agent_target (deleted)") return 0 ;; esac
+    fi
+    return 1
   fi
 }
 agent_matching_pids() {

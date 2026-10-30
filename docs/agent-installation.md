@@ -10,7 +10,9 @@ The generated installers support foreground runs and managed background installa
 4. Replace the program and startup configuration, preserving `agent.json`.
 5. Start the new Agent and check the service startup result.
 
-Linux uses systemd; macOS uses the `com.gosshd.agent` system LaunchDaemon; Windows uses the `gosshd-agent` service. Android uses Termux services or the root controller. Unix and Android binaries are replaced by renaming a verified staging file rather than writing over a running executable. Foreground re-runs stop only the matching runtime installation, not a separate system service; Android foreground and background modes share one installation directory and therefore stop its existing supervisor first.
+Linux installs `/usr/local/bin/linksphere-agent` and the `linksphere-agent` systemd service. A reinstallation migrates the legacy `gosshd-agent` service, preserves `/var/lib/gosshd/agent.json` and the update retry budget, and retires the old startup and binary after the new service starts. Unrecognized service definitions or conflicting retry state abort the migration before stopping either service.
+
+macOS uses the `com.gosshd.agent` system LaunchDaemon; Windows uses the `gosshd-agent` service. Android uses Termux services or the root controller. Unix and Android binaries are replaced by renaming a verified staging file rather than writing over a running executable. Foreground re-runs stop only the matching runtime installation, not a separate system service; Android foreground and background modes share one installation directory and therefore stop its existing supervisor first.
 
 The Linux installer reads the named `LoadState` property so it also works with older systemd releases that lack `systemctl --value`. A missing service permits a fresh install; an inspection failure aborts before stopping or replacing the installed Agent.
 

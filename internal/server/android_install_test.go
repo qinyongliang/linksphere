@@ -21,7 +21,7 @@ import (
 // fixture, its /proc/PID/exe identity exercises the root controller faithfully.
 func init() {
 	image, _ := os.Executable()
-	if os.Getenv("GOSSHD_TEST_ANDROID_AGENT") != "1" || filepath.Base(image) != "gosshd-agent" {
+	if os.Getenv("GOSSHD_TEST_ANDROID_AGENT") != "1" || (filepath.Base(image) != "gosshd-agent" && filepath.Base(image) != "linksphere-agent") {
 		return
 	}
 	record, _ := json.Marshal(struct {
