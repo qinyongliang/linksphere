@@ -35,10 +35,19 @@ test('Manual repair builds publish to the requested semantic version, not the br
  assert.ok(source.includes('Published versions require a semantic version tag'));
 });
 
+test('Release workflow builds packages without running test suites',async()=>{
+ const source=await read('.github/workflows/release.yml');
+ assert.ok(source.includes('Check public repository content'));
+ assert.ok(source.includes('Build frontend assets'));
+ assert.ok(source.includes('Build binaries and packages'));
+ assert.doesNotMatch(source,/^\s+- name: Test /m);
+ assert.doesNotMatch(source,/go test|node --test|playwright\/cli\.js.*install/m);
+});
+
 test('Repair publication reuses validated archives without rewriting release metadata',async()=>{
  const workflow=await read('.github/workflows/publish-archives.yml');
  const script=await read('scripts/upload-release-assets.sh');
- assert.ok(workflow.includes('Require successful validation and package build steps'));
+ assert.ok(workflow.includes('Require successful package build'));
  assert.ok(workflow.includes('actions/download-artifact@v4'));
  assert.ok(script.includes('sha256sum --check checksums.txt'));
  assert.ok(script.includes('gh release upload'));
