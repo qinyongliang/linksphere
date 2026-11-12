@@ -5,7 +5,18 @@ import { MachinePicker } from "./MachinePicker";
 import { useI18n } from "../i18n";
 import type { ConsoleData, HTTPForwardConfig, HTTPForwardListener, HTTPForwardLocation, HTTPForwardServer, TunnelConfig } from "../types";
 import "./forwarding.css";
-const id = () => crypto.randomUUID();
+let fallbackIDCounter = 0;
+const id = () => {
+ if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+ if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  return [...bytes].map((byte,index) => `${[4,6,8,10].includes(index) ? "-" : ""}${byte.toString(16).padStart(2,"0")}`).join("");
+ }
+ fallbackIDCounter += 1;
+ return `http-${Date.now().toString(36)}-${fallbackIDCounter.toString(36)}`;
+};
 export const newHTTPLocation = (exit: string): HTTPForwardLocation => ({id:id(),name:"",match:"prefix",path:"/",exit_target_id:exit,scheme:"http",host:"127.0.0.1",port:80,strip_prefix:false,preserve_host:false});
 export const newHTTPConfig = (exit:string):HTTPForwardConfig => ({listeners:[{host:"0.0.0.0",port:8080}],servers:[newHTTPServer(exit)]});
 export const newHTTPServer = (exit:string):HTTPForwardServer => ({id:id(),name:"",hosts:["_"],locations:[newHTTPLocation(exit)]});
@@ -24,7 +35,7 @@ export function HTTPForwardEditor({data,config,onChange}:{data:ConsoleData;confi
  const moveLocation=(index:number,location:number,delta:number)=>{const locations=[...http.servers[index].locations];[locations[location],locations[location+delta]]=[locations[location+delta],locations[location]];updateServer(index,{locations});};
  const updateServer=(i:number,p:Partial<HTTPForwardServer>)=>setHTTP({servers:http.servers.map((s,n)=>n===i?{...s,...p}:s)});
  const updateLocation=(i:number,j:number,p:Partial<HTTPForwardLocation>)=>updateServer(i,{locations:http.servers[i].locations.map((l,n)=>n===j?{...l,...p}:l)});
- const picker=(value:string,label:string,change:(id:string)=>void)=><MachinePicker targets={data.targets} folders={data.targetFolders} currentTargetID={value} label={label} variant="field" additionalOptions={data.user.is_system_admin?[{value:"",label:text("服务端","Server")}]:[]} onOpenTarget={change}/>;
+ const picker=(value:string,label:string,change:(id:string)=>void,allowServer=true)=><MachinePicker targets={data.targets} folders={data.targetFolders} currentTargetID={value} label={label} variant="field" additionalOptions={allowServer&&data.user.is_system_admin?[{value:"",label:text("服务端","Server")}]:[]} onOpenTarget={change}/>;
  return <div className="http-forward-editor">
   <Card size="small" title={text("监听入口 · 所有 server 块共享","Listener · shared by all server blocks")}>
    <label className="field"><span>{text("入口机器","Entry machine")}</span>{picker(config.entry_target_id,text("入口机器","Entry machine"),v=>onChange({entry_target_id:v}))}</label>
@@ -51,7 +62,7 @@ export function HTTPForwardEditor({data,config,onChange}:{data:ConsoleData;confi
      <label className="field"><span>{text("路径 / 正则","Path / regex")}</span><Input required maxLength={4096} value={l.path} onChange={e=>updateLocation(i,j,{path:e.target.value})}/></label>
     </div>
     <div className="forward-grid upstream">
-     <label className="field"><span>{text("出口 Agent / SSH 节点","Exit Agent / SSH node")}</span>{picker(l.exit_target_id,text("出口机器","Exit machine"),v=>updateLocation(i,j,{exit_target_id:v}))}</label>
+     <label className="field"><span>{text("出口 Agent / SSH 节点","Exit Agent / SSH node")}</span>{picker(l.exit_target_id,text("出口机器","Exit machine"),v=>updateLocation(i,j,{exit_target_id:v}),false)}</label>
      <label className="field"><span>{text("协议","Scheme")}</span><Select value={l.scheme} options={[{value:"http",label:"HTTP"},{value:"https",label:"HTTPS"}]} onChange={scheme=>updateLocation(i,j,{scheme})}/></label>
      <label className="field"><span>{text("服务 IP / 域名","Service IP / hostname")}</span><Input required value={l.host} onChange={e=>updateLocation(i,j,{host:e.target.value})}/></label>
      <label className="field"><span>{text("服务端口","Service port")}</span><InputNumber min={1} max={65535} value={l.port} onChange={v=>updateLocation(i,j,{port:v||80})}/></label>

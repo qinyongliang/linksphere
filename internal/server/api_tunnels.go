@@ -95,6 +95,9 @@ func (a *App) validateTunnel(ctx context.Context, user store.User, orgID string,
 			if !user.IsSystemAdmin {
 				return errors.New("bastion endpoints require system admin access")
 			}
+			if c.Protocol == "http" {
+				return errors.New("HTTP exit endpoints cannot use the bastion")
+			}
 			continue
 		}
 		target, err := a.store.Repository().GetSSHTarget(ctx, id)
