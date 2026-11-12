@@ -23,10 +23,10 @@ type mcpTunnelSaveInput struct {
 	HTTP            *forward.HTTPConfig `json:"http,omitempty" jsonschema:"HTTP listeners (host defaults to 0.0.0.0), server and location blocks; all listeners share these routes and support WebSocket upgrades. Match modifiers: prefix, =, ^~, ~, ~*. Regex uses Go RE2."`
 	OrganizationID  string              `json:"organization_id"`
 	Name            string              `json:"name"`
-	EntryTargetID   string              `json:"entry_target_id,omitempty" jsonschema:"Entry machine ID; empty selects the bastion (system administrators only)."`
+	EntryTargetID   string              `json:"entry_target_id,omitempty" jsonschema:"Entry machine ID; an empty HTTP entry selects the bastion, while an empty port-forward entry requires system administrator access."`
 	ListenHost      string              `json:"listen_host,omitempty" jsonschema:"Port forwarding bind IP, defaults to 0.0.0.0. HTTP bindings use http.listeners."`
 	ListenPort      int                 `json:"listen_port,omitempty" jsonschema:"Required for port forwarding; HTTP bindings use http.listeners."`
-	ExitTargetID    string              `json:"exit_target_id,omitempty" jsonschema:"Exit machine ID; empty selects the bastion (system administrators only). SSH jump chains are supported."`
+	ExitTargetID    string              `json:"exit_target_id,omitempty" jsonschema:"Port-forward exit machine ID; empty selects the bastion (system administrators only). HTTP location exits must be organization machines unless the caller is a system administrator. SSH jump chains are supported."`
 	DestinationHost string              `json:"destination_host,omitempty" jsonschema:"Destination resolved and accessed from the exit machine."`
 	DestinationPort int                 `json:"destination_port,omitempty"`
 	DurationSeconds int64               `json:"duration_seconds,omitempty" jsonschema:"Duration per enable; 0 is permanent; maximum 365 days. Reconnecting does not reset expiration."`
@@ -105,7 +105,7 @@ func (a *App) addMCPTunnelTools(s *mcp.Server, initialActor store.User) {
 			}
 			return nil, mcpTunnelOutput{a.tunnelView(t)}, nil
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "tunnel_create", Description: "Create a persistent port or HTTP forward, initially stopped. HTTP uses named server/host and location blocks with per-location exits, schemes and headers; Port uses destination_host/port and transports tcp/udp/both (default tcp). Protocol must be port or http. UDP requires bastion or Agent endpoints; SSH is TCP-only. Flow: client -> entry machine listening address -> exit machine -> destination. Entry/exit accept Agent or ordinary SSH machine IDs and SSH jump chains. Call tunnel_enable separately to start. Creator is always the authenticated user."},
+	mcp.AddTool(s, &mcp.Tool{Name: "tunnel_create", Description: "Create a persistent port or HTTP forward, initially stopped. HTTP uses named server/host and location blocks with per-location exits, schemes and headers; a server-side entry is allowed, while server-side exits require a system administrator. Port uses destination_host/port and transports tcp/udp/both (default tcp). Protocol must be port or http. UDP requires bastion or Agent endpoints; SSH is TCP-only. Flow: client -> entry machine listening address -> exit machine -> destination. Entry/exit accept Agent or ordinary SSH machine IDs and SSH jump chains. Call tunnel_enable separately to start. Creator is always the authenticated user."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in mcpTunnelSaveInput) (*mcp.CallToolResult, mcpTunnelOutput, error) {
 			actor, err := a.tunnelActor(ctx, initialActor)
 			if err != nil {

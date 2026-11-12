@@ -66,7 +66,11 @@ func (a *App) validateTunnel(ctx context.Context, user store.User, orgID string,
 	} else if len(c.Transports) != 0 {
 		return errors.New("transports require port protocol")
 	}
-	endpoints := []string{c.EntryTargetID}
+	type tunnelEndpoint struct {
+		id           string
+		allowBastion bool
+	}
+	endpoints := []tunnelEndpoint{{id: c.EntryTargetID, allowBastion: user.IsSystemAdmin || c.Protocol == "http"}}
 	if c.Protocol == "http" {
 		if _, err := forward.HTTPListeners(c.HTTP); err != nil {
 			return err
@@ -76,30 +80,28 @@ func (a *App) validateTunnel(ctx context.Context, user store.User, orgID string,
 		}
 		for _, s := range c.HTTP.Servers {
 			for _, l := range s.Locations {
-				endpoints = append(endpoints, l.ExitTargetID)
+				endpoints = append(endpoints, tunnelEndpoint{id: l.ExitTargetID, allowBastion: user.IsSystemAdmin})
 			}
 		}
 	} else {
 		if c.HTTP != nil {
 			return errors.New("HTTP blocks require HTTP protocol")
 		}
-		endpoints = append(endpoints, c.ExitTargetID)
+		endpoints = append(endpoints, tunnelEndpoint{id: c.ExitTargetID, allowBastion: user.IsSystemAdmin})
 	}
 	checked := map[string]bool{}
-	for _, id := range endpoints {
+	for _, endpoint := range endpoints {
+		id := endpoint.id
+		if id == "" {
+			if !endpoint.allowBastion {
+				return errors.New("bastion endpoints require system admin access")
+			}
+			continue
+		}
 		if checked[id] {
 			continue
 		}
 		checked[id] = true
-		if id == "" {
-			if !user.IsSystemAdmin {
-				return errors.New("bastion endpoints require system admin access")
-			}
-			if c.Protocol == "http" {
-				return errors.New("HTTP exit endpoints cannot use the bastion")
-			}
-			continue
-		}
 		target, err := a.store.Repository().GetSSHTarget(ctx, id)
 		if err != nil {
 			return errors.New("endpoint machine not found")

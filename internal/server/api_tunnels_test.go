@@ -48,6 +48,11 @@ func TestTunnelAPIPermissionsValidationAndTrafficRanges(t *testing.T) {
 	body["duration_seconds"] = 0
 	body["exit_target_id"] = target.ID
 	postJSON(t, admin, srv.URL+"/api/tunnels", body, 400, nil)
+	httpConfig := map[string]any{"listeners": []any{map[string]any{"host": "127.0.0.1", "port": 8080}}, "servers": []any{map[string]any{"id": "site", "hosts": []string{"_"}, "locations": []any{map[string]any{"id": "route", "match": "prefix", "path": "/", "scheme": "http", "host": "127.0.0.1", "port": 80, "exit_target_id": target.ID}}}}}
+	httpBody := map[string]any{"protocol": "http", "organization_id": otherOrg.ID, "name": "HTTP endpoint permissions", "entry_target_id": "", "http": httpConfig}
+	postJSON(t, regular, srv.URL+"/api/tunnels", httpBody, 200, nil)
+	httpConfig["servers"].([]any)[0].(map[string]any)["locations"].([]any)[0].(map[string]any)["exit_target_id"] = ""
+	postJSON(t, regular, srv.URL+"/api/tunnels", httpBody, 400, nil)
 	getJSON(t, admin, srv.URL+"/api/tunnels/"+id+"/traffic?from=0&to=9999999999999", 400, nil)
 	var history struct {
 		Interval int                   `json:"interval_seconds"`

@@ -35,10 +35,10 @@ export function HTTPForwardEditor({data,config,onChange}:{data:ConsoleData;confi
  const moveLocation=(index:number,location:number,delta:number)=>{const locations=[...http.servers[index].locations];[locations[location],locations[location+delta]]=[locations[location+delta],locations[location]];updateServer(index,{locations});};
  const updateServer=(i:number,p:Partial<HTTPForwardServer>)=>setHTTP({servers:http.servers.map((s,n)=>n===i?{...s,...p}:s)});
  const updateLocation=(i:number,j:number,p:Partial<HTTPForwardLocation>)=>updateServer(i,{locations:http.servers[i].locations.map((l,n)=>n===j?{...l,...p}:l)});
- const picker=(value:string,label:string,change:(id:string)=>void,allowServer=true)=><MachinePicker targets={data.targets} folders={data.targetFolders} currentTargetID={value} label={label} variant="field" additionalOptions={allowServer&&data.user.is_system_admin?[{value:"",label:text("服务端","Server")}]:[]} onOpenTarget={change}/>;
+ const picker=(value:string,label:string,change:(id:string)=>void,allowServer:boolean)=><MachinePicker targets={data.targets} folders={data.targetFolders} currentTargetID={value} label={label} variant="field" additionalOptions={allowServer?[{value:"",label:text("服务端","Server")}]:[]} onOpenTarget={change}/>;
  return <div className="http-forward-editor">
   <Card size="small" title={text("监听入口 · 所有 server 块共享","Listener · shared by all server blocks")}>
-   <label className="field"><span>{text("入口机器","Entry machine")}</span>{picker(config.entry_target_id,text("入口机器","Entry machine"),v=>onChange({entry_target_id:v}))}</label>
+   <label className="field"><span>{text("入口机器","Entry machine")}</span>{picker(config.entry_target_id,text("入口机器","Entry machine"),v=>onChange({entry_target_id:v}),true)}</label>
    <div className="forward-listeners">
     {listeners.map((entry,index)=><div className="forward-listener-row" key={index}>
      <label className="field"><span>{text("监听 IP","Listen IP")}</span><Input required aria-label="HTTP listen IP" value={entry.host} placeholder="0.0.0.0" onChange={e=>updateListener(index,{host:e.target.value})}/></label>
@@ -62,7 +62,7 @@ export function HTTPForwardEditor({data,config,onChange}:{data:ConsoleData;confi
      <label className="field"><span>{text("路径 / 正则","Path / regex")}</span><Input required maxLength={4096} value={l.path} onChange={e=>updateLocation(i,j,{path:e.target.value})}/></label>
     </div>
     <div className="forward-grid upstream">
-     <label className="field"><span>{text("出口 Agent / SSH 节点","Exit Agent / SSH node")}</span>{picker(l.exit_target_id,text("出口机器","Exit machine"),v=>updateLocation(i,j,{exit_target_id:v}),false)}</label>
+     <label className="field"><span>{text("出口 Agent / SSH 节点","Exit Agent / SSH node")}</span>{picker(l.exit_target_id,text("出口机器","Exit machine"),v=>updateLocation(i,j,{exit_target_id:v}),data.user.is_system_admin)}</label>
      <label className="field"><span>{text("协议","Scheme")}</span><Select value={l.scheme} options={[{value:"http",label:"HTTP"},{value:"https",label:"HTTPS"}]} onChange={scheme=>updateLocation(i,j,{scheme})}/></label>
      <label className="field"><span>{text("服务 IP / 域名","Service IP / hostname")}</span><Input required value={l.host} onChange={e=>updateLocation(i,j,{host:e.target.value})}/></label>
      <label className="field"><span>{text("服务端口","Service port")}</span><InputNumber min={1} max={65535} value={l.port} onChange={v=>updateLocation(i,j,{port:v||80})}/></label>
