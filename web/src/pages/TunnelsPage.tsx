@@ -32,7 +32,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { HTTPForwardEditor, HTTPForwardSummary, newHTTPConfig } from "../components/HTTPForwardEditor";
 import { EgressEditor, egressCopy, egressProblem, egressSummary } from "../components/EgressEditor";
-import { PortRuleLayers } from "../components/PortRuleLayers";
+import { FlowLanes } from "../components/FlowLanes";
 import { ForwardLogsDialog } from "../components/ForwardLogs";
 import { MachinePicker } from "../components/MachinePicker";
 import { TunnelErrorNotice } from "../components/TunnelErrorNotice";
@@ -153,7 +153,7 @@ const copy = {
     ruleProtocolHelp:
       "同一端口可用 curl -x http:// 或 socks5:// 访问，自动识别协议。",
     modeLabel: "连接方式",
-    modeSingle: "单一出口",
+    modeSingle: "单一服务",
     modeProxy: "代理出口",
     modeSingleHelp:
       "客户端连到监听端口后，固定转发到下面的目标地址；不解析代理协议。",
@@ -285,7 +285,7 @@ const copy = {
     ruleProtocolHelp:
       "One port answers curl -x http:// or socks5://; auto-detect sniffs the protocol.",
     modeLabel: "Connection",
-    modeSingle: "Single destination",
+    modeSingle: "Fixed service",
     modeProxy: "Proxy egress",
     modeSingleHelp:
       "Whatever connects to the port is forwarded to the destination below; proxy protocols are not used.",
@@ -514,39 +514,6 @@ function newPortRule(): PortRule {
   };
 }
 
-type TunnelMode = "single" | "proxy";
-
-/** plainEgress reports the default egress: host routing, no pinning. */
-function plainEgress(spec?: PortRule["egress"]): boolean {
-  if (!spec) return true;
-  return (
-    spec.mode !== "proxy" &&
-    (spec.family ?? "auto") === "auto" &&
-    (spec.ipv6_mode ?? "host") === "host" &&
-    !spec.interface &&
-    !spec.pool_start &&
-    !spec.proxy_url
-  );
-}
-
-/**
- * tunnelModeOf decides which editor applies. A fixed destination is a single
- * exit; anything that lets the client pick the destination, spans a port range
- * or selects an egress path is a proxy exit.
- */
-function tunnelModeOf(config: TunnelConfig): TunnelMode {
-  const rules = config.port_rules ?? [];
-  if (rules.length > 1) return "proxy";
-  const rule = rules[0];
-  if (!rule) return "single";
-  if (rule.listen_port_end && rule.listen_port_end > rule.listen_port) {
-    return "proxy";
-  }
-  // The listen protocol is the source of truth: raw TCP streams to the fixed
-  // destination, while auto/HTTP/SOCKS let the client pick one.
-  return (rule.protocol ?? "auto") === "tcp" ? "single" : "proxy";
-}
-
 function portRulesOf(config: TunnelConfig): PortRule[] {
   if (config.port_rules?.length) return config.port_rules;
   return [
@@ -574,24 +541,6 @@ function hydratePortRules(config: TunnelConfig): PortRule[] {
     destination_port: rule.destination_port || 80,
     egress: rule.egress,
   }));
-}
-
-function PortRulesEditor({
-  config,
-  words: w,
-  mode,
-  onChange,
-}: {
-  config: TunnelConfig;
-  words: Words;
-  mode: TunnelMode;
-  onChange: (patch: Partial<TunnelConfig>) => void;
-}) {
-  // The layered editor is where the tunnel is actually configured; this keeps
-  // the page's call sites unchanged.
-  return (
-    <PortRuleLayers config={config} words={w} mode={mode} onChange={onChange} />
-  );
 }
 
 function FlowArrow({ label }: { label?: string }) {
@@ -1122,21 +1071,15 @@ function TunnelEditor({
           <Network size={17} />
           <strong>{w.flow}</strong>
         </div>
-        {config.protocol === "http" ? <HTTPForwardEditor data={data} config={config} onChange={patch=>setConfig(c=>({...c,...patch}))}/> : <><Flow
-          config={config}
-          targets={data.targets}
-          words={w}
-          editor={{
-            data,
-            onChange: (patch) => setConfig((c) => ({ ...c, ...patch })),
-          }}
-        />
-        <PortRulesEditor
-          config={config}
-          words={w}
-          mode={tunnelModeOf(config)}
-          onChange={(patch) => setConfig((c) => ({ ...c, ...patch }))}
-        /></>}
+        {config.protocol === "http" ? <HTTPForwardEditor data={data} config={config} onChange={patch=>setConfig(c=>({...c,...patch}))}/> : (
+          <FlowLanes
+            data={data}
+            config={config}
+            targets={data.targets}
+            words={w}
+            onChange={(patch) => setConfig((c) => ({ ...c, ...patch }))}
+          />
+        )}
         <div className="tunnel-duration">
           <div className="field">
             <span>

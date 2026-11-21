@@ -1,0 +1,133 @@
+/* Sequence-style editor: one row per port, entry on the left, exit on the right. */
+.flow-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lane-head {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.8fr) 34px minmax(320px, 1.6fr);
+  gap: 8px;
+  align-items: stretch;
+}
+
+.lane-head-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid rgba(120, 132, 150, 0.28);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(246, 249, 253, 0.75);
+}
+
+.lane-head-cell .lane-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: #4b7bec;
+}
+
+.lane-head-cell strong {
+  font-size: 13px;
+}
+
+.lane-transports {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--tunnel-muted, #5b6472);
+}
+
+.lane-row {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.8fr) 34px minmax(320px, 1.6fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.lane-port {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid rgba(120, 132, 150, 0.22);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.lane-host {
+  width: 108px;
+}
+
+.lane-port-number {
+  width: 96px;
+}
+
+.lane-form {
+  width: 108px;
+}
+
+.lane-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 12px;
+  color: rgba(91, 100, 114, 0.6);
+}
+
+.lane-config {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(120, 132, 150, 0.22);
+  border-radius: 10px;
+  background: rgba(250, 252, 255, 0.9);
+}
+
+.lane-target {
+  display: flex;
+  gap: 6px;
+}
+
+.lane-target input {
+  flex: 1;
+}
+
+.lane-proxy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.lane-protocol {
+  width: 132px;
+}
+
+.lane-add {
+  display: flex;
+  justify-content: flex-start;
+  padding-left: 2px;
+}
+
+@media (max-width: 900px) {
+  .lane-head,
+  .lane-row {
+    grid-template-columns: 1fr;
+  }
+  .lane-link {
+    justify-content: flex-start;
+    padding: 0 0 0 14px;
+  }
+}
