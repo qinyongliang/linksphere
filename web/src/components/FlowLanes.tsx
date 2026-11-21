@@ -1,4 +1,5 @@
-import { Button, Checkbox, Input, InputNumber, Select } from "antd";
+import { Button, Card, Checkbox, Input, InputNumber, Select, Tooltip } from "antd";
+import { HelpCircle } from "lucide-react";
 import { ArrowRight, Plus, Trash2 } from "lucide-react";
 import type { ConsoleData, PortRule, Target, TunnelConfig } from "../types";
 import { EgressEditor } from "./EgressEditor";
@@ -116,6 +117,9 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
                 aria-label={w.port}
                 onChange={(v) => update(index, { listen_port: Number(v) || 0 })}
               />
+              <Tooltip title={w.portFormTip}>
+                <HelpCircle size={13} className="lane-tip" aria-label={w.portFormTip} />
+              </Tooltip>
               <Select
                 className="lane-form"
                 value={isRange(rule) ? "range" : "single"}
@@ -162,24 +166,44 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
               <ArrowRight size={16} />
             </div>
 
-            <div className="lane-config">
-              <Segmented
-                value={single ? "single" : "proxy"}
-                items={[
-                  ["single", w.modeSingle],
-                  ["proxy", w.modeProxy],
-                ]}
-                onChange={(value) =>
-                  update(index, {
-                    protocol:
-                      value === "single"
-                        ? "tcp"
-                        : rule.protocol === "tcp"
-                          ? "auto"
-                          : rule.protocol,
-                  })
-                }
-              />
+            <Card size="small" className="lane-card">
+              <div className="lane-card-head">
+                <Segmented
+                  value={single ? "single" : "proxy"}
+                  items={[
+                    ["single", w.laneSingle],
+                    ["proxy", w.laneProxy],
+                  ]}
+                  onChange={(value) =>
+                    update(index, {
+                      protocol:
+                        value === "single"
+                          ? "tcp"
+                          : rule.protocol === "tcp"
+                            ? "auto"
+                            : rule.protocol,
+                    })
+                  }
+                />
+                <Tooltip title={w.laneModeTip}>
+                  <HelpCircle size={13} className="lane-tip" aria-label={w.laneModeTip} />
+                </Tooltip>
+                {!single && (
+                  <Select
+                    className="lane-protocol"
+                    value={rule.protocol ?? "auto"}
+                    aria-label={w.ruleProtocol}
+                    options={[
+                      { value: "auto", label: w.ruleProtocolAuto },
+                      { value: "http", label: w.ruleProtocolHttp },
+                      { value: "socks", label: w.ruleProtocolSocks },
+                    ]}
+                    onChange={(value) =>
+                      update(index, { protocol: value === "auto" ? undefined : value })
+                    }
+                  />
+                )}
+              </div>
               {single ? (
                 <div className="lane-target">
                   <Input
@@ -197,27 +221,13 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
                   />
                 </div>
               ) : (
-                <div className="lane-proxy">
-                  <Select
-                    className="lane-protocol"
-                    value={rule.protocol ?? "auto"}
-                    options={[
-                      { value: "auto", label: w.ruleProtocolAuto },
-                      { value: "http", label: w.ruleProtocolHttp },
-                      { value: "socks", label: w.ruleProtocolSocks },
-                    ]}
-                    onChange={(value) =>
-                      update(index, { protocol: value === "auto" ? undefined : value })
-                    }
-                  />
-                  <EgressEditor
-                    value={rule.egress}
-                    exitTargetID={config.exit_target_id}
-                    onChange={(egress) => update(index, { egress })}
-                  />
-                </div>
+                <EgressEditor
+                  value={rule.egress}
+                  exitTargetID={config.exit_target_id}
+                  onChange={(egress) => update(index, { egress })}
+                />
               )}
-            </div>
+            </Card>
           </div>
         );
       })}

@@ -2,97 +2,101 @@
 .flow-lanes {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
-.lane-head {
+.lane-head,
+.lane-row {
   display: grid;
-  grid-template-columns: minmax(230px, 0.8fr) 34px minmax(320px, 1.6fr);
-  gap: 8px;
+  grid-template-columns: minmax(214px, 0.72fr) 26px minmax(330px, 1.7fr);
+  gap: 6px;
   align-items: stretch;
 }
 
 .lane-head-cell {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  border: 1px solid rgba(120, 132, 150, 0.28);
+  gap: 4px;
+  border: 1px solid var(--line, rgba(120, 132, 150, 0.28));
   border-radius: 10px;
-  padding: 8px 10px;
-  background: rgba(246, 249, 253, 0.75);
+  padding: 6px 9px;
+  background: var(--surface-alt, rgba(246, 249, 253, 0.75));
 }
 
 .lane-head-cell .lane-step {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   color: #fff;
   background: #4b7bec;
 }
 
 .lane-head-cell strong {
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .lane-transports {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--tunnel-muted, #5b6472);
-}
-
-.lane-row {
-  display: grid;
-  grid-template-columns: minmax(230px, 0.8fr) 34px minmax(320px, 1.6fr);
-  gap: 8px;
-  align-items: start;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted, #5b6472);
 }
 
 .lane-port {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
-  padding: 8px 10px;
-  border: 1px solid rgba(120, 132, 150, 0.22);
+  padding: 6px 8px;
+  border: 1px solid var(--line, rgba(120, 132, 150, 0.22));
   border-radius: 10px;
   background: #fff;
 }
 
 .lane-host {
-  width: 108px;
-}
-
-.lane-port-number {
   width: 96px;
 }
 
+.lane-port-number {
+  width: 84px;
+}
+
 .lane-form {
-  width: 108px;
+  width: 96px;
 }
 
 .lane-link {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding-top: 12px;
-  color: rgba(91, 100, 114, 0.6);
+  color: rgba(91, 100, 114, 0.55);
 }
 
-.lane-config {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid rgba(120, 132, 150, 0.22);
+.lane-card {
   border-radius: 10px;
-  background: rgba(250, 252, 255, 0.9);
+}
+
+.lane-card .ant-card-body {
+  display: grid;
+  gap: 6px;
+  padding: 8px 9px !important;
+}
+
+.lane-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.lane-protocol {
+  width: 118px;
 }
 
 .lane-target {
@@ -102,17 +106,6 @@
 
 .lane-target input {
   flex: 1;
-}
-
-.lane-proxy {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: flex-start;
-}
-
-.lane-protocol {
-  width: 132px;
 }
 
 .lane-add {
@@ -128,6 +121,17 @@
   }
   .lane-link {
     justify-content: flex-start;
-    padding: 0 0 0 14px;
+    padding-left: 12px;
   }
+}
+.lane-tip {
+  color: rgba(91, 100, 114, 0.65);
+  cursor: help;
+  flex: none;
+}
+.lane-card .egress-editor {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin-top: 2px;
 }

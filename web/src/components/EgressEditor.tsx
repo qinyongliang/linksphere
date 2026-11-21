@@ -1,9 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { Input, InputNumber, Select } from "antd";
+import { Input, InputNumber, Select, Tooltip } from "antd";
+import { HelpCircle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { useI18n } from "../i18n";
 import type { EgressFamily, EgressSpec, NetInterface } from "../types";
+import { Segmented } from "./ui";
 import "./egress.css";
 
 const enEgress = {
@@ -40,6 +42,21 @@ const enEgress = {
   proxyInvalid: "Proxy URL must start with socks5://, socks5h://, http:// or https://.",
   interfaceRequired: "Select an egress interface.",
   noExit: "Select an exit machine first.",
+  modeLabel: "Egress mode",
+  modeTip: "How the exit machine reaches the destination.",
+  modeDirect: "Direct",
+  modeProxy: "Via proxy",
+  sourceLabel: "Source address",
+  sourceTip: "Which address the connection is sent from.",
+  sourceHost: "System default",
+  sourceInterface: "Pinned interface",
+  sourcePool: "IPv6 pool",
+  familyTip: "Which protocol family is used to dial the destination.",
+  nicTip: "Always send through this network interface, for example to pick one WAN.",
+  poolStartTip: "First address of the range that new connections draw from.",
+  poolSizeTip: "How many addresses the range covers.",
+  poolModeTip: "Random takes any address per connection; sequential advances from the previous one.",
+  proxyTip: "socks5://, socks5h://, http:// or https:// proxy the exit machine forwards through.",
 };
 
 const zhEgress: typeof enEgress = {
@@ -76,6 +93,21 @@ const zhEgress: typeof enEgress = {
   proxyInvalid: "代理地址需以 socks5://、socks5h://、http:// 或 https:// 开头。",
   interfaceRequired: "请选择出口网卡。",
   noExit: "请先选择出口机器。",
+  modeLabel: "出口方式",
+  modeTip: "出口机器怎么连到目标。",
+  modeDirect: "直接发送",
+  modeProxy: "经上游代理",
+  sourceLabel: "源地址",
+  sourceTip: "连接从哪个地址发出去。",
+  sourceHost: "系统决定",
+  sourceInterface: "指定网卡",
+  sourcePool: "IPv6 地址池",
+  familyTip: "按哪种协议连接目标。",
+  nicTip: "固定从这张网卡发出，多线路时用来指定走哪条。",
+  poolStartTip: "给新连接分配地址的范围起点。",
+  poolSizeTip: "这个范围里有多少个地址可用。",
+  poolModeTip: "随机：每条连接随机取一个；顺序：在上一个地址基础上递增。",
+  proxyTip: "出口机器把连接交给这个 socks5://、socks5h://、http:// 或 https:// 代理转发。",
 };
 
 export const egressCopy = { "zh-CN": zhEgress, en: enEgress };
@@ -271,46 +303,79 @@ export function EgressEditor({
   const poolStartInvalid = draft.ipv6_mode === "pool" && Boolean(draft.pool_start) && !draft.pool_start?.includes(":");
   const proxyInvalid = draft.mode === "proxy" && Boolean(draft.proxy_url) && !/^(socks5|socks5h|http|https):\/\/.+/i.test(draft.proxy_url || "");
 
+  const tip = (text: string) => (
+    <Tooltip title={text}>
+      <HelpCircle size={13} className="egress-tip" aria-label={text} />
+    </Tooltip>
+  );
+  const direct = draft.mode !== "proxy";
   return (
     <div className="egress-editor">
-      <div className="egress-grid">
+      <div className="egress-row">
         <label className="field">
-          <span>{w.egress}</span>
-          <Select
-            aria-label={w.egress}
-            value={modeChoice}
-            onChange={setMode}
-            options={[
-              { value: "host", label: w.hostEgress },
-              { value: "interface", label: w.pinnedNIC, disabled: !supported },
-              { value: "pool", label: w.ipv6Pool, disabled: !supported },
-              { value: "proxy", label: w.upstreamProxy },
+          <span>
+            {w.modeLabel}
+            {tip(w.modeTip)}
+          </span>
+          <Segmented
+            value={direct ? "direct" : "proxy"}
+            items={[
+              ["direct", w.modeDirect],
+              ["proxy", w.modeProxy],
             ]}
+            onChange={(value) => setMode(value === "proxy" ? "proxy" : "host")}
           />
         </label>
-        <label className="field">
-          <span>{w.family}</span>
-          <Select
-            aria-label={w.family}
-            value={draft.family}
-            onChange={(family: EgressFamily) =>
-              update(
-                family === "ipv4" && draft.ipv6_mode !== "host"
-                  ? { family, ipv6_mode: "host", interface: undefined, pool_start: undefined, pool_size: 0 }
-                  : { family },
-              )
-            }
-            options={[
-              { value: "auto", label: familyLabel("auto", w) },
-              { value: "ipv4", label: familyLabel("ipv4", w) },
-              { value: "ipv6", label: familyLabel("ipv6", w) },
-              { value: "both", label: familyLabel("both", w) },
-            ]}
-          />
-        </label>
-        {draft.mode === "proxy" && (
+        {direct ? (
+          <>
+            <label className="field">
+              <span>
+                {w.sourceLabel}
+                {tip(w.sourceTip)}
+              </span>
+              <Select
+                aria-label={w.sourceLabel}
+                className="egress-source"
+                value={modeChoice}
+                onChange={setMode}
+                options={[
+                  { value: "host", label: w.sourceHost },
+                  { value: "interface", label: w.sourceInterface, disabled: !supported },
+                  { value: "pool", label: w.sourcePool, disabled: !supported },
+                ]}
+              />
+            </label>
+            <label className="field">
+              <span>
+                {w.family}
+                {tip(w.familyTip)}
+              </span>
+              <Select
+                aria-label={w.family}
+                className="egress-family"
+                value={draft.family}
+                onChange={(family: EgressFamily) =>
+                  update(
+                    family === "ipv4" && draft.ipv6_mode !== "host"
+                      ? { family, ipv6_mode: "host", interface: undefined, pool_start: undefined, pool_size: 0 }
+                      : { family },
+                  )
+                }
+                options={[
+                  { value: "auto", label: familyLabel("auto", w) },
+                  { value: "ipv4", label: familyLabel("ipv4", w) },
+                  { value: "ipv6", label: familyLabel("ipv6", w) },
+                  { value: "both", label: familyLabel("both", w) },
+                ]}
+              />
+            </label>
+          </>
+        ) : (
           <label className="field egress-wide">
-            <span>{w.proxyURL}</span>
+            <span>
+              {w.proxyURL}
+              {tip(w.proxyTip)}
+            </span>
             <Input
               aria-label={w.proxyURL}
               value={draft.proxy_url || ""}
@@ -321,27 +386,24 @@ export function EgressEditor({
           </label>
         )}
       </div>
-      {showIPv6 && (
-        <div className="egress-grid">
+      {direct && draft.ipv6_mode === "interface" && (
+        <div className="egress-row">
           <label className="field">
-            <span>{w.nic}</span>
+            <span>
+              {w.nic}
+              {tip(w.nicTip)}
+            </span>
             <Select<string | undefined>
               aria-label={w.nic}
+              className="egress-nic"
               allowClear
-              value={draft.ipv6_mode === "interface" ? draft.interface : undefined}
+              value={draft.interface}
               placeholder={w.nicPlaceholder}
               disabled={!supported || interfaces.length === 0}
               onChange={(name) =>
                 update(
                   name
-                    ? {
-                        mode: "direct",
-                        family: draft.family === "ipv4" ? "both" : draft.family,
-                        ipv6_mode: "interface",
-                        interface: name,
-                        pool_start: undefined,
-                        pool_size: 0,
-                      }
+                    ? { mode: "direct", family: draft.family === "ipv4" ? "both" : draft.family, ipv6_mode: "interface", interface: name }
                     : { mode: "direct", ipv6_mode: "host", interface: undefined },
                 )
               }
@@ -351,58 +413,55 @@ export function EgressEditor({
               })}
             />
           </label>
+        </div>
+      )}
+      {direct && draft.ipv6_mode === "pool" && (
+        <div className="egress-row">
           <label className="field">
-            <span>{w.ipv6Mode}</span>
+            <span>
+              {w.poolStart}
+              {tip(w.poolStartTip)}
+            </span>
+            <Input
+              aria-label={w.poolStart}
+              className="egress-pool"
+              value={draft.pool_start || ""}
+              placeholder={w.poolStartPlaceholder}
+              disabled={!supported}
+              status={poolStartInvalid ? "error" : undefined}
+              onChange={(event) => update({ pool_start: event.target.value })}
+            />
+          </label>
+          <label className="field">
+            <span>
+              {w.poolSize}
+              {tip(w.poolSizeTip)}
+            </span>
+            <InputNumber
+              aria-label={w.poolSize}
+              min={1}
+              max={65536}
+              value={draft.pool_size || 64}
+              disabled={!supported}
+              onChange={(size) => update({ pool_size: Number(size) || 64 })}
+            />
+          </label>
+          <label className="field">
+            <span>
+              {w.poolMode}
+              {tip(w.poolModeTip)}
+            </span>
             <Select
-              aria-label={w.ipv6Mode}
-              value={draft.ipv6_mode}
-              onChange={setIPv6Mode}
+              aria-label={w.poolMode}
+              value={draft.pool_mode}
+              disabled={!supported}
+              onChange={(pool_mode: "rotate" | "sticky") => update({ pool_mode })}
               options={[
-                { value: "host", label: w.ipv6Host },
-                { value: "interface", label: w.ipv6Interface, disabled: !supported },
-                { value: "pool", label: w.ipv6PoolMode, disabled: !supported },
+                { value: "rotate", label: w.rotate },
+                { value: "sticky", label: w.sticky },
               ]}
             />
           </label>
-          {draft.ipv6_mode === "pool" && (
-            <>
-              <label className="field">
-                <span>{w.poolStart}</span>
-                <Input
-                  aria-label={w.poolStart}
-                  value={draft.pool_start || ""}
-                  placeholder={w.poolStartPlaceholder}
-                  disabled={!supported}
-                  status={poolStartInvalid ? "error" : undefined}
-                  onChange={(event) => update({ pool_start: event.target.value })}
-                />
-              </label>
-              <label className="field">
-                <span>{w.poolSize}</span>
-                <InputNumber
-                  aria-label={w.poolSize}
-                  min={1}
-                  max={65536}
-                  value={draft.pool_size || 64}
-                  disabled={!supported}
-                  onChange={(size) => update({ pool_size: Number(size) || 64 })}
-                />
-              </label>
-              <label className="field">
-                <span>{w.poolMode}</span>
-                <Select
-                  aria-label={w.poolMode}
-                  value={draft.pool_mode}
-                  disabled={!supported}
-                  onChange={(pool_mode: "rotate" | "sticky") => update({ pool_mode })}
-                  options={[
-                    { value: "rotate", label: w.rotate },
-                    { value: "sticky", label: w.sticky },
-                  ]}
-                />
-              </label>
-            </>
-          )}
         </div>
       )}
       {hint && <p className="egress-hint">{hint}</p>}

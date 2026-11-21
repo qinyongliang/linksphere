@@ -152,14 +152,16 @@ const copy = {
     ruleProtocolSocks: "SOCKS 代理",
     ruleProtocolHelp:
       "同一端口可用 curl -x http:// 或 socks5:// 访问，自动识别协议。",
-    modeLabel: "连接方式",
-    modeSingle: "单一服务",
-    modeProxy: "代理出口",
+    laneMode: "连接方式",
+    laneSingle: "单一服务",
+    laneProxy: "代理出口",
     modeSingleHelp:
       "客户端连到监听端口后，固定转发到下面的目标地址；不解析代理协议。",
     modeProxyHelp:
       "客户端自己决定目的地（SOCKS5 / HTTP 代理），可配置端口段、出口网卡、IPv6 地址池或上游代理。",
     portForm: "端口形式",
+    portFormTip: "单一端口只监听一个端口；端口段会监听起始到结束之间的每个端口，最多 1024 个。",
+    laneModeTip: "单一服务：连接固定转发到右下的目标。代理出口：客户端自己决定目标，走 SOCKS5 / HTTP 代理，可配置网卡、IPv6 池或上游代理。",
     addEgress: "添加出口选择（网卡 / IPv6 池 / 上游代理）",
     layerListen: "监听端口",
     layerListenHelp: "连接从这里进来。",
@@ -284,14 +286,16 @@ const copy = {
     ruleProtocolSocks: "SOCKS proxy",
     ruleProtocolHelp:
       "One port answers curl -x http:// or socks5://; auto-detect sniffs the protocol.",
-    modeLabel: "Connection",
-    modeSingle: "Fixed service",
-    modeProxy: "Proxy egress",
+    laneMode: "Connection",
+    laneSingle: "Fixed service",
+    laneProxy: "Proxy egress",
     modeSingleHelp:
       "Whatever connects to the port is forwarded to the destination below; proxy protocols are not used.",
     modeProxyHelp:
       "The client chooses the destination (SOCKS5 / HTTP proxy). Port ranges, an egress interface, an IPv6 pool and an upstream proxy are available here.",
     portForm: "Port form",
+    portFormTip: "A single port listens on one number; a range listens on every port from the start to the end, up to 1024.",
+    laneModeTip: "Fixed service sends every connection to the destination below. Proxy egress lets the client pick the destination through SOCKS5 or HTTP, with an optional interface, IPv6 pool or upstream proxy.",
     addEgress: "Add an egress choice (interface / IPv6 pool / upstream proxy)",
     layerListen: "Listen",
     layerListenHelp: "Where connections arrive.",
