@@ -32,6 +32,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { HTTPForwardEditor, HTTPForwardSummary, newHTTPConfig } from "../components/HTTPForwardEditor";
 import { EgressEditor, egressCopy, egressProblem, egressSummary } from "../components/EgressEditor";
+import { PortRuleLayers } from "../components/PortRuleLayers";
 import { ForwardLogsDialog } from "../components/ForwardLogs";
 import { MachinePicker } from "../components/MachinePicker";
 import { TunnelErrorNotice } from "../components/TunnelErrorNotice";
@@ -151,6 +152,28 @@ const copy = {
     ruleProtocolSocks: "SOCKS 代理",
     ruleProtocolHelp:
       "同一端口可用 curl -x http:// 或 socks5:// 访问，自动识别协议。",
+    modeLabel: "连接方式",
+    modeSingle: "单一出口",
+    modeProxy: "代理出口",
+    modeSingleHelp:
+      "客户端连到监听端口后，固定转发到下面的目标地址；不解析代理协议。",
+    modeProxyHelp:
+      "客户端自己决定目的地（SOCKS5 / HTTP 代理），可配置端口段、出口网卡、IPv6 地址池或上游代理。",
+    portForm: "端口形式",
+    addEgress: "添加出口选择（网卡 / IPv6 池 / 上游代理）",
+    layerListen: "监听端口",
+    layerListenHelp: "连接从这里进来。",
+    layerTransport: "传输与协议",
+    layerTransportHelp: "连接怎么被承载。",
+    layerEgress: "出口",
+    layerEgressHelp: "连接从哪台机器、用什么地址出去。",
+    layerDestination: "目标",
+    layerDestinationHelp: "固定转发到这里。",
+    layerDestinationProxy: "目标由客户端决定，不需要填写。",
+    addPort: "添加端口",
+    portFormSingle: "单一端口",
+    portFormRange: "端口段",
+    singleTarget: "转发目标",
     invalidRule: "请补全每条规则的端口、目标地址与传输协议。",
     ...egressCopy["zh-CN"],
   },
@@ -261,6 +284,28 @@ const copy = {
     ruleProtocolSocks: "SOCKS proxy",
     ruleProtocolHelp:
       "One port answers curl -x http:// or socks5://; auto-detect sniffs the protocol.",
+    modeLabel: "Connection",
+    modeSingle: "Single destination",
+    modeProxy: "Proxy egress",
+    modeSingleHelp:
+      "Whatever connects to the port is forwarded to the destination below; proxy protocols are not used.",
+    modeProxyHelp:
+      "The client chooses the destination (SOCKS5 / HTTP proxy). Port ranges, an egress interface, an IPv6 pool and an upstream proxy are available here.",
+    portForm: "Port form",
+    addEgress: "Add an egress choice (interface / IPv6 pool / upstream proxy)",
+    layerListen: "Listen",
+    layerListenHelp: "Where connections arrive.",
+    layerTransport: "Transport",
+    layerTransportHelp: "How the connection is carried.",
+    layerEgress: "Egress",
+    layerEgressHelp: "Which machine sends it, and from which address.",
+    layerDestination: "Destination",
+    layerDestinationHelp: "Always forwarded here.",
+    layerDestinationProxy: "The client chooses the destination, so there is nothing to fill in.",
+    addPort: "Add port",
+    portFormSingle: "Single port",
+    portFormRange: "Port range",
+    singleTarget: "Destination",
     invalidRule: "Complete the port, destination and transports of every rule.",
     ...egressCopy.en,
   },
@@ -275,6 +320,9 @@ const blank: TunnelConfig = {
   destination_host: "127.0.0.1",
   destination_port: 80,
   duration_seconds: 0,
+  // Start from one explicit rule so the form never relies on "blank means
+  // single port" behaviour.
+  port_rules: [newPortRule()],
 };
 const endpoint = (host: string, port: number) =>
   `${host.includes(":") ? `[${host}]` : host}:${port}`;
@@ -461,7 +509,42 @@ function newPortRule(): PortRule {
     transports: ["tcp"],
     destination_host: "127.0.0.1",
     destination_port: 80,
+    // A new tunnel is a single destination until the user picks proxy egress.
+    protocol: "tcp",
   };
+}
+
+type TunnelMode = "single" | "proxy";
+
+/** plainEgress reports the default egress: host routing, no pinning. */
+function plainEgress(spec?: PortRule["egress"]): boolean {
+  if (!spec) return true;
+  return (
+    spec.mode !== "proxy" &&
+    (spec.family ?? "auto") === "auto" &&
+    (spec.ipv6_mode ?? "host") === "host" &&
+    !spec.interface &&
+    !spec.pool_start &&
+    !spec.proxy_url
+  );
+}
+
+/**
+ * tunnelModeOf decides which editor applies. A fixed destination is a single
+ * exit; anything that lets the client pick the destination, spans a port range
+ * or selects an egress path is a proxy exit.
+ */
+function tunnelModeOf(config: TunnelConfig): TunnelMode {
+  const rules = config.port_rules ?? [];
+  if (rules.length > 1) return "proxy";
+  const rule = rules[0];
+  if (!rule) return "single";
+  if (rule.listen_port_end && rule.listen_port_end > rule.listen_port) {
+    return "proxy";
+  }
+  // The listen protocol is the source of truth: raw TCP streams to the fixed
+  // destination, while auto/HTTP/SOCKS let the client pick one.
+  return (rule.protocol ?? "auto") === "tcp" ? "single" : "proxy";
 }
 
 function portRulesOf(config: TunnelConfig): PortRule[] {
@@ -496,193 +579,18 @@ function hydratePortRules(config: TunnelConfig): PortRule[] {
 function PortRulesEditor({
   config,
   words: w,
+  mode,
   onChange,
 }: {
   config: TunnelConfig;
   words: Words;
+  mode: TunnelMode;
   onChange: (patch: Partial<TunnelConfig>) => void;
 }) {
-  const rules = config.port_rules ?? [];
-  const apply = (next: PortRule[]) => {
-    const transports = Array.from(
-      new Set(next.flatMap((rule) => rule.transports ?? [])),
-    ) as ("tcp" | "udp")[];
-    const first = next[0];
-    onChange({
-      port_rules: next,
-      transports: transports.length ? transports : ["tcp"],
-      listen_host: first?.listen_host || "0.0.0.0",
-      listen_port: first?.listen_port || 8080,
-    });
-  };
-  const update = (index: number, patch: Partial<PortRule>) =>
-    apply(rules.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)));
-  const move = (index: number, delta: number) => {
-    const target = index + delta;
-    if (target < 0 || target >= rules.length) return;
-    const next = [...rules];
-    [next[index], next[target]] = [next[target], next[index]];
-    apply(next);
-  };
+  // The layered editor is where the tunnel is actually configured; this keeps
+  // the page's call sites unchanged.
   return (
-    <div className="port-rules-editor">
-      <div className="port-rules-head">
-        <strong>{w.portRules}</strong>
-        <span className="pill">
-          {rules.length} {w.rulesUnit}
-        </span>
-      </div>
-      <span className="tunnel-help">{w.rangeHint}</span>
-      <span className="tunnel-help">{w.ruleProtocolHelp}</span>
-      {rules.map((rule, index) => (
-        <Card
-          key={rule.id}
-          size="small"
-          className="port-rule-card"
-          title={
-            <>
-              <Tag color="blue">#{index + 1}</Tag>
-              {rule.name ||
-                `${rule.listen_host || "0.0.0.0"}:${portRangeLabel(rule)}`}
-            </>
-          }
-          extra={
-            <div className="port-rule-actions">
-              <Button
-                size="small"
-                aria-label={w.moveUp}
-                disabled={index === 0}
-                onClick={() => move(index, -1)}
-              >
-                ↑
-              </Button>
-              <Button
-                size="small"
-                aria-label={w.moveDown}
-                disabled={index === rules.length - 1}
-                onClick={() => move(index, 1)}
-              >
-                ↓
-              </Button>
-              <Button
-                danger
-                type="text"
-                aria-label={w.removeRule}
-                icon={<Trash2 size={14} />}
-                disabled={rules.length === 1}
-                onClick={() => apply(rules.filter((_, i) => i !== index))}
-              />
-            </div>
-          }
-        >
-          <div className="port-rule-grid">
-            <label className="field">
-              <span>{w.listen}</span>
-              <Input
-                aria-label={w.listen}
-                value={rule.listen_host || ""}
-                placeholder="0.0.0.0"
-                onChange={(e) => update(index, { listen_host: e.target.value })}
-              />
-            </label>
-            <label className="field">
-              <span>{w.port}</span>
-              <InputNumber
-                aria-label={w.port}
-                min={1}
-                max={65535}
-                value={rule.listen_port || null}
-                onChange={(v) => update(index, { listen_port: Number(v) || 0 })}
-              />
-            </label>
-            <label className="field">
-              <span>{w.portEnd}</span>
-              <InputNumber
-                aria-label={w.portEnd}
-                min={1}
-                max={65535}
-                value={rule.listen_port_end || null}
-                placeholder={w.portEndPlaceholder}
-                onChange={(v) =>
-                  update(index, {
-                    listen_port_end:
-                      v && Number(v) > rule.listen_port ? Number(v) : undefined,
-                  })
-                }
-              />
-            </label>
-            <div className="field">
-              <span>{w.protocols}</span>
-              <Checkbox.Group
-                aria-label={w.protocols}
-                options={["tcp", "udp"].map((value) => ({ label: value.toUpperCase(), value }))}
-                value={rule.transports}
-                onChange={(values) => update(index, { transports: values as ("tcp" | "udp")[] })}
-              />
-            </div>
-            <label className="field">
-              <span>{w.ruleProtocol}</span>
-              <Select
-                aria-label={w.ruleProtocol}
-                value={rule.protocol ?? "auto"}
-                options={[
-                  { value: "auto", label: w.ruleProtocolAuto },
-                  { value: "tcp", label: w.ruleProtocolTcp },
-                  { value: "http", label: w.ruleProtocolHttp },
-                  { value: "socks", label: w.ruleProtocolSocks },
-                ]}
-                onChange={(value) =>
-                  update(index, {
-                    protocol: value === "auto" ? undefined : value,
-                  })
-                }
-              />
-            </label>
-            <label className="field">
-              <span>{w.targetHost}</span>
-              <Input
-                aria-label={w.targetHost}
-                value={rule.destination_host}
-                onChange={(e) => update(index, { destination_host: e.target.value })}
-              />
-            </label>
-            <label className="field">
-              <span>{w.targetPort}</span>
-              <InputNumber
-                aria-label={w.targetPort}
-                min={1}
-                max={65535}
-                value={rule.destination_port || null}
-                onChange={(v) => update(index, { destination_port: Number(v) || 1 })}
-              />
-            </label>
-          </div>
-          <label className="field">
-            <span>{w.ruleName}</span>
-            <Input
-              maxLength={128}
-              value={rule.name || ""}
-              placeholder={w.rulePlaceholder}
-              onChange={(e) => update(index, { name: e.target.value })}
-            />
-          </label>
-          <EgressEditor
-            value={rule.egress}
-            exitTargetID={config.exit_target_id}
-            onChange={(egress) => update(index, { egress })}
-          />
-        </Card>
-      ))}
-      <Button
-        type="dashed"
-        block
-        icon={<Plus size={15} />}
-        disabled={rules.length >= 64}
-        onClick={() => apply([...rules, newPortRule()])}
-      >
-        {w.addRule}
-      </Button>
-    </div>
+    <PortRuleLayers config={config} words={w} mode={mode} onChange={onChange} />
   );
 }
 
@@ -1226,6 +1134,7 @@ function TunnelEditor({
         <PortRulesEditor
           config={config}
           words={w}
+          mode={tunnelModeOf(config)}
           onChange={(patch) => setConfig((c) => ({ ...c, ...patch }))}
         /></>}
         <div className="tunnel-duration">
