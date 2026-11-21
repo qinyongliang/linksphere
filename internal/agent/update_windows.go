@@ -36,8 +36,15 @@ func replaceAndRestart(currentExe, tmpPath string) error {
 	if err != nil {
 		return err
 	}
+	// The service may be registered under any name, so resolve it by the
+	// executable it runs. Restarting a hardcoded name leaves the updated agent
+	// stopped and every tunnel on this machine down.
+	serviceName := ""
+	if isService {
+		serviceName = serviceNameForExecutable(target)
+	}
 	powershell := filepath.Join(systemDir, "WindowsPowerShell", "v1.0", "powershell.exe")
-	script := windowsUpdateScript(currentExe, tmpPath, os.Getpid(), os.Args[1:], isService)
+	script := windowsUpdateScript(currentExe, tmpPath, os.Getpid(), os.Args[1:], serviceName)
 	cmd := exec.Command(powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShell(script))
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
@@ -48,6 +55,37 @@ func replaceAndRestart(currentExe, tmpPath string) error {
 	}
 	_ = cmd.Process.Release()
 	return nil
+}
+
+// serviceNameForExecutable finds the Windows service that runs this executable.
+// An empty result means no service was found, and the caller falls back to
+// restarting the process directly.
+func serviceNameForExecutable(target string) string {
+	manager, err := mgr.Connect()
+	if err != nil {
+		return ""
+	}
+	defer manager.Disconnect()
+	names, err := manager.ListServices()
+	if err != nil {
+		return ""
+	}
+	for _, name := range names {
+		service, err := manager.OpenService(name)
+		if err != nil {
+			continue
+		}
+		config, configErr := service.Config()
+		service.Close()
+		if configErr != nil {
+			continue
+		}
+		args, argErr := windows.DecomposeCommandLine(config.BinaryPathName)
+		if argErr == nil && len(args) > 0 && strings.EqualFold(filepath.Clean(args[0]), filepath.Clean(target)) {
+			return name
+		}
+	}
+	return ""
 }
 
 func legacyUpdateService(target string) bool {
@@ -86,21 +124,18 @@ func encodePowerShell(script string) string {
 	return base64.StdEncoding.EncodeToString(bytes)
 }
 
-func windowsUpdateScript(currentExe, tmpPath string, parentPID int, args []string, isService bool) string {
+func windowsUpdateScript(currentExe, tmpPath string, parentPID int, args []string, serviceName string) string {
 	escapedArgs := make([]string, len(args))
 	for i, arg := range args {
 		escapedArgs[i] = windows.EscapeArg(arg)
 	}
-	service := "$false"
-	if isService {
-		service = "$true"
-	}
+	service := quotePowerShell(serviceName)
 	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $target = %s
 $replacement = %s
 $parentPID = %d
 $arguments = %s
-$isService = %s
+$serviceName = %s
 $parentExited = $false
 $installed = $false
 $errorLog = $target + '.update-error.log'
@@ -143,12 +178,12 @@ public static class GosshdUpdate {
 }
 if ($parentExited) {
     try {
-        if ($isService) {
-            $service = Get-Service -Name 'gosshd-agent'
+        if ($serviceName) {
+            $service = Get-Service -Name $serviceName
             if ($service.Status -eq 'StopPending') {
                 $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
             }
-            Start-Service -Name 'gosshd-agent'
+            Start-Service -Name $serviceName
             $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
         } else {
             $start = New-Object Diagnostics.ProcessStartInfo

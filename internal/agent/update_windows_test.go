@@ -155,9 +155,11 @@ func TestWindowsUpdateReplacesAndRestartsCanonicalPath(t *testing.T) {
 	}
 }
 
+// A service registered under any name must be restarted by that name; a
+// hardcoded one left the updated agent stopped.
 func TestWindowsUpdateScriptServiceRestart(t *testing.T) {
-	script := windowsUpdateScript(`C:\ProgramData\gosshd\gosshd-agent.exe.new-123`, `C:\ProgramData\gosshd\gosshd-agent.exe.new-456`, 1234, nil, true)
-	for _, want := range []string{"$isService = $true", "Start-Service -Name 'gosshd-agent'", "WaitForStatus('Stopped'"} {
+	script := windowsUpdateScript(`C:\ProgramData\gosshd\gosshd-agent.exe.new-123`, `C:\ProgramData\gosshd\gosshd-agent.exe.new-456`, 1234, nil, "linksphere-agent")
+	for _, want := range []string{"$serviceName = 'linksphere-agent'", "Start-Service -Name $serviceName", "WaitForStatus('Stopped'"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("service script missing %q", want)
 		}
@@ -229,7 +231,7 @@ func TestWindowsUpdateFailureRetainsCanonicalAndRestarts(t *testing.T) {
 	}
 	result := filepath.Join(dir, "result.json")
 	args := []string{"-test.run=^TestWindowsUpdateProcess$"}
-	script := windowsUpdateScript(canonical, pending, parent.Process.Pid, args, false)
+	script := windowsUpdateScript(canonical, pending, parent.Process.Pid, args, "")
 	// Exercise the actual failing MoveFileEx and recovery with one attempt; the
 	// 60-attempt production retry policy need not make this regression slow.
 	script = strings.Replace(script, "$attempt -lt 60", "$attempt -lt 1", 1)
