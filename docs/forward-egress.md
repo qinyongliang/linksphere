@@ -77,6 +77,26 @@ HTTP forwarding applies egress per location:
     {"id": "loc", "path": "/api", "scheme": "http", "host": "192.0.2.10", "port": 8080,
      "exit_target_id": "target-id", "egress": {"interface": "eth1", "family": "ipv4"}}
 
+## Hosts that cannot run the Agent
+
+A 32-bit router cannot host the Agent (its pure-Go SQLite has no 32-bit MIPS
+build). Ship `gosshd-egress` there instead: a small forwarder that speaks SOCKS5
+and HTTP CONNECT on one port and binds every outgoing connection to one network
+device.
+
+    gosshd-egress -listen 192.0.2.10:10801 -device pppoe-wan1 -family ipv4
+    gosshd-egress -listen 192.0.2.10:10802 -device pppoe-wan2 -family ipv4
+
+Because each connection is bound to its device, the kernel routes it out of that
+interface by itself: no policy routing and no NAT rules are needed, and nothing
+has to be re-applied after a PPPoE re-dial. Point the exit at it with proxy
+egress:
+
+    "egress": {"mode": "proxy", "proxy_url": "socks5h://192.0.2.10:10801"}
+
+Use `-allow` to restrict which clients may use a listener, and `-family` to
+force IPv4 or IPv6 for the outgoing connection.
+
 ## Runtime placement
 
 | Egress capability | Where it runs | Requirement |
