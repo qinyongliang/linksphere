@@ -46,7 +46,7 @@ const enEgress = {
   modeLabel: "Egress mode",
   modeTip: "How the exit machine reaches the destination.",
   modeDirect: "Direct",
-  modeProxy: "Via proxy",
+  modeProxy: "Via gateway",
   sourceLabel: "Egress route",
   sourceTip: "Which address the connection is sent from.",
   sourceHost: "Default route",
@@ -58,6 +58,11 @@ const enEgress = {
   poolSizeTip: "How many addresses the range covers.",
   poolModeTip: "Random takes any address per connection; sequential advances from the previous one.",
   proxyTip: "socks5://, socks5h://, http:// or https:// proxy the exit machine forwards through.",
+  gateway: "Egress gateway",
+  gatewayTip: "Hand the connection to a gateway such as an OpenWrt router, so it leaves from that device.",
+  gatewayPlaceholder: "socks5h://192.0.2.1:1080",
+  useRecommended: "Use the recommended range",
+  recommendedPool: "Recommended",
 };
 
 const zhEgress: typeof enEgress = {
@@ -99,7 +104,7 @@ const zhEgress: typeof enEgress = {
   modeLabel: "出口方式",
   modeTip: "出口机器怎么连到目标。",
   modeDirect: "直接发送",
-  modeProxy: "经上游代理",
+  modeProxy: "经出口网关",
   sourceLabel: "出口线路",
   sourceTip: "连接从哪条线路发出去：默认按系统路由，也可以固定走某张网卡，或从 IPv6 地址池里取地址。",
   sourceHost: "默认线路",
@@ -110,7 +115,12 @@ const zhEgress: typeof enEgress = {
   poolStartTip: "给新连接分配地址的范围起点。",
   poolSizeTip: "这个范围里有多少个地址可用。",
   poolModeTip: "随机：每条连接随机取一个；顺序：在上一个地址基础上递增。",
-  proxyTip: "上游代理。",
+  proxyTip: "出口机器把连接交给这个 socks5://、socks5h://、http:// 或 https:// 网关转发。",
+  gateway: "出口网关",
+  gatewayTip: "把连接交给一台网关（例如 OpenWrt 路由器），从那里发出去。",
+  gatewayPlaceholder: "socks5h://192.0.2.1:1080",
+  useRecommended: "使用推荐地址段",
+  recommendedPool: "推荐",
 };
 
 export const egressCopy = { "zh-CN": zhEgress, en: enEgress };
@@ -255,6 +265,19 @@ export function EgressEditor({
     [net.data],
   );
 
+  // The exit already owns a global IPv6 address, so its /64 is the natural
+  // pool: suggest a start inside it instead of making the operator type one.
+  const recommendedPool = useMemo(() => {
+    for (const iface of interfaces) {
+      const address = globalIPv6(iface);
+      if (!address) continue;
+      const parts = address.address.split(":");
+      if (parts.length < 4 || parts.slice(0, 4).some((part) => !part)) continue;
+      return `${parts.slice(0, 4).join(":")}::3000`;
+    }
+    return "";
+  }, [interfaces]);
+
   const hint = !exitTargetID
     ? w.noExit
     : net.isError
@@ -287,7 +310,14 @@ export function EgressEditor({
     } else if (choice === "interface") {
       update({ mode: "direct", family, ipv6_mode: "interface" });
     } else if (choice === "pool") {
-      update({ mode: "direct", family, ipv6_mode: "pool", pool_size: draft.pool_size || 64, pool_mode: draft.pool_mode || "rotate" });
+      update({
+        mode: "direct",
+        family,
+        ipv6_mode: "pool",
+        pool_start: draft.pool_start || recommendedPool || undefined,
+        pool_size: draft.pool_size || 64,
+        pool_mode: draft.pool_mode || "rotate",
+      });
     } else {
       update({ mode: "direct", family, ipv6_mode: "host", interface: undefined, pool_start: undefined, pool_size: 0 });
     }
@@ -311,27 +341,6 @@ export function EgressEditor({
       <HelpCircle size={13} className="egress-tip" aria-label={text} />
     </Tooltip>
   );
-  // Upstream proxies were removed from the product. A rule saved with one is
-  // shown as-is so nothing is lost, and can be switched to a direct egress.
-  if (draft.mode === "proxy") {
-    return (
-      <div className="egress-editor">
-        <div className="egress-legacy">
-          <span>{w.legacyProxy}</span>
-          <code>{draft.proxy_url || "—"}</code>
-          <Button
-            size="small"
-            onClick={() =>
-              update({ mode: "direct", ipv6_mode: "host", proxy_url: undefined })
-            }
-          >
-            {w.legacyProxyClear}
-          </Button>
-        </div>
-        {hint && <p className="egress-hint">{hint}</p>}
-      </div>
-    );
-  }
   return (
     <div className="egress-editor">
       <div className="egress-row">
@@ -349,34 +358,51 @@ export function EgressEditor({
               { value: "host", label: w.sourceHost },
               { value: "interface", label: w.sourceInterface, disabled: !supported },
               { value: "pool", label: w.sourcePool, disabled: !supported },
+              { value: "proxy", label: w.gateway },
             ]}
           />
         </label>
-        <label className="field">
-          <span>
-            {w.family}
-            {tip(w.familyTip)}
-          </span>
-          <Select
-            aria-label={w.family}
-            className="egress-family"
-            value={draft.family}
-            onChange={(family: EgressFamily) =>
-              update(
-                family === "ipv4" && draft.ipv6_mode !== "host"
-                  ? { family, ipv6_mode: "host", interface: undefined, pool_start: undefined, pool_size: 0 }
-                  : { family },
-              )
-            }
-            options={[
-              { value: "auto", label: familyLabel("auto", w) },
-              { value: "ipv4", label: familyLabel("ipv4", w) },
-              { value: "ipv6", label: familyLabel("ipv6", w) },
-              { value: "both", label: familyLabel("both", w) },
-            ]}
-          />
-        </label>
-        {draft.ipv6_mode === "interface" && (
+        {draft.mode === "proxy" ? (
+          <label className="field egress-wide">
+            <span>
+              {w.gateway}
+              {tip(w.gatewayTip)}
+            </span>
+            <Input
+              aria-label={w.gateway}
+              value={draft.proxy_url || ""}
+              placeholder={w.gatewayPlaceholder}
+              status={proxyInvalid ? "error" : undefined}
+              onChange={(event) => update({ proxy_url: event.target.value })}
+            />
+          </label>
+        ) : (
+          <label className="field">
+            <span>
+              {w.family}
+              {tip(w.familyTip)}
+            </span>
+            <Select
+              aria-label={w.family}
+              className="egress-family"
+              value={draft.family}
+              onChange={(family: EgressFamily) =>
+                update(
+                  family === "ipv4" && draft.ipv6_mode !== "host"
+                    ? { family, ipv6_mode: "host", interface: undefined, pool_start: undefined, pool_size: 0 }
+                    : { family },
+                )
+              }
+              options={[
+                { value: "auto", label: familyLabel("auto", w) },
+                { value: "ipv4", label: familyLabel("ipv4", w) },
+                { value: "ipv6", label: familyLabel("ipv6", w) },
+                { value: "both", label: familyLabel("both", w) },
+              ]}
+            />
+          </label>
+        )}
+        {draft.mode !== "proxy" && draft.ipv6_mode === "interface" && (
           <label className="field">
             <span>
               {w.nic}
@@ -404,7 +430,7 @@ export function EgressEditor({
           </label>
         )}
       </div>
-      {draft.ipv6_mode === "pool" && (
+      {draft.mode !== "proxy" && draft.ipv6_mode === "pool" && (
         <div className="egress-row">
           <label className="field">
             <span>
@@ -415,7 +441,7 @@ export function EgressEditor({
               aria-label={w.poolStart}
               className="egress-pool"
               value={draft.pool_start || ""}
-              placeholder={w.poolStartPlaceholder}
+              placeholder={recommendedPool || w.poolStartPlaceholder}
               disabled={!supported}
               status={poolStartInvalid ? "error" : undefined}
               onChange={(event) => update({ pool_start: event.target.value })}
@@ -451,6 +477,16 @@ export function EgressEditor({
               ]}
             />
           </label>
+          {recommendedPool && draft.pool_start !== recommendedPool && (
+            <Button
+              size="small"
+              onClick={() =>
+                update({ pool_start: recommendedPool, pool_size: draft.pool_size || 64 })
+              }
+            >
+              {w.useRecommended} {recommendedPool}
+            </Button>
+          )}
         </div>
       )}
       {hint && <p className="egress-hint">{hint}</p>}

@@ -2,6 +2,7 @@ import { Button, Card, Checkbox, Input, InputNumber, Tooltip } from "antd";
 import { ArrowRight, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { ConsoleData, PortRule, Target, TunnelConfig } from "../types";
+import { EgressEditor } from "./EgressEditor";
 import { MachinePicker } from "./MachinePicker";
 import { Segmented } from "./ui";
 import "./flow-lanes.css";
@@ -68,6 +69,7 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
   const base = rules[0];
   // Ports are edited as text so a half-typed range does not jump around.
   const [portDraft, setPortDraft] = useState<Record<string, string>>({});
+  const [advanced, setAdvanced] = useState(false);
 
   const write = (next: PortRule[]) => {
     const transports = Array.from(
@@ -84,6 +86,16 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
     write(rules.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)));
   const shared = (patch: Partial<PortRule>) =>
     write(rules.map((rule) => ({ ...rule, ...patch })));
+
+  // One egress applies to the whole tunnel, so it is summarised on the exit card.
+  const egressHint = (() => {
+    const spec = base.egress;
+    if (!spec) return "";
+    if (spec.mode === "proxy") return `${w.gateway}: ${spec.proxy_url || ""}`;
+    if (spec.ipv6_mode === "pool") return `${w.ipv6Pool}: ${spec.pool_start || ""}`;
+    if (spec.ipv6_mode === "interface") return `${w.pinnedNIC}: ${spec.interface || ""}`;
+    return "";
+  })();
 
   const picker = (side: "entry" | "exit") => (
     <MachinePicker
@@ -120,6 +132,19 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
           <span className="lane-step">2</span>
           <strong>{w.exit}</strong>
           {picker("exit")}
+          <div className="lane-advanced">
+            <button type="button" onClick={() => setAdvanced((open) => !open)}>
+              {advanced ? w.advancedEgressHide : w.advancedEgress}
+            </button>
+            {!advanced && egressHint && <span className="lane-advanced-hint">{egressHint}</span>}
+          </div>
+          {advanced && (
+            <EgressEditor
+              value={base.egress}
+              exitTargetID={config.exit_target_id}
+              onChange={(egress) => shared({ egress })}
+            />
+          )}
         </div>
       </div>
 
