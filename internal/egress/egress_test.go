@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"strings"
 	"testing"
 
 	protocoltypes "github.com/qinyongliang/linksphere/internal/protocol/types"
@@ -142,5 +143,35 @@ func TestProbeReportsInterfaces(t *testing.T) {
 		if iface.Name == "" {
 			t.Fatal("interface name must not be empty")
 		}
+	}
+}
+
+// TestPoolAllocationSurvivesProvisioningFailure proves a source address is still
+// allocated when the host cannot take ownership of it (non-root or non-Linux).
+func TestPoolAllocationSurvivesProvisioningFailure(t *testing.T) {
+	p := newPool(protocoltypes.EgressSpec{PoolStart: "2001:db8:1::100", PoolSize: 4, PoolMode: protocoltypes.EgressPoolRotate})
+	alloc := p.Next()
+	if alloc.IP == nil {
+		t.Fatal("no address allocated")
+	}
+	if alloc.Index < 0 || alloc.Index > 3 {
+		t.Fatalf("index outside pool: %d", alloc.Index)
+	}
+}
+
+// TestPoolKeepsPrefixHighBits proves the allocated address keeps the upper 64
+// bits of pool_start; only the interface identifier advances.
+func TestPoolKeepsPrefixHighBits(t *testing.T) {
+	p := newPool(protocoltypes.EgressSpec{PoolStart: "240e:39f:9:d485::1000", PoolSize: 8, PoolMode: protocoltypes.EgressPoolRotate})
+	alloc := p.Next()
+	if got := alloc.IP.String(); !strings.HasPrefix(got, "240e:39f:9:d485:") {
+		t.Fatalf("prefix lost in allocation: %s", got)
+	}
+	want := binary.BigEndian.Uint64(net.ParseIP("240e:39f:9:d485::").To16()[:8])
+	if got := binary.BigEndian.Uint64(alloc.IP[:8]); got != want {
+		t.Fatalf("upper half changed: %x", got)
+	}
+	if got := binary.BigEndian.Uint64(alloc.IP[8:]); got < 0x1000 || got >= 0x1008 {
+		t.Fatalf("interface id outside pool: %x", got)
 	}
 }

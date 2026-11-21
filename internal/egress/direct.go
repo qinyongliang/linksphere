@@ -47,7 +47,13 @@ func (d *directDialer) DialContext(ctx context.Context, network, address string)
 			dialer.LocalAddr = &net.TCPAddr{IP: source}
 		}
 	}
-	control, err := socketControl(d.spec.Interface, d.spec.IPv6Mode == protocoltypes.EgressIPv6Pool)
+	// A pinned source address already selects the interface; also binding the
+	// device breaks PPPoE links, where the route is pinned to the ppp device.
+	device := d.spec.Interface
+	if d.spec.IPv6Mode == protocoltypes.EgressIPv6Interface {
+		device = ""
+	}
+	control, err := socketControl(device, d.spec.IPv6Mode == protocoltypes.EgressIPv6Pool)
 	if err != nil {
 		return nil, err
 	}
