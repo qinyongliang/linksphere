@@ -93,7 +93,13 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
       currentTargetID={side === "entry" ? config.entry_target_id : config.exit_target_id}
       label={side === "entry" ? w.entryMachine : w.exitMachine}
       variant="field"
-      additionalOptions={data.user.is_system_admin ? [{ value: "", label: w.bastion }] : []}
+      // The bastion is always available as an entry; as an exit it is a system
+      // administrator choice, since it sends traffic out of this host.
+      additionalOptions={
+        side === "entry" || data.user.is_system_admin
+          ? [{ value: "", label: w.bastion }]
+          : []
+      }
       onOpenTarget={(id) =>
         onChange(side === "entry" ? { entry_target_id: id } : { exit_target_id: id })
       }
@@ -220,27 +226,11 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
                   />
                 </div>
               ) : (
-                <>
-                  <p className="lane-card-hint">{w.laneClientHint}</p>
-                  <Select
-                    className="lane-protocol"
-                    value={rule.protocol ?? "auto"}
-                    aria-label={w.ruleProtocol}
-                    options={[
-                      { value: "auto", label: w.ruleProtocolAuto },
-                      { value: "http", label: w.ruleProtocolHttp },
-                      { value: "socks", label: w.ruleProtocolSocks },
-                    ]}
-                    onChange={(value: string) =>
-                      update(index, { protocol: value === "auto" ? undefined : (value as PortRule["protocol"]) })
-                    }
-                  />
-                  <EgressEditor
-                    value={rule.egress}
-                    exitTargetID={config.exit_target_id}
-                    onChange={(egress) => update(index, { egress })}
-                  />
-                </>
+                <EgressEditor
+                  value={rule.egress}
+                  exitTargetID={config.exit_target_id}
+                  onChange={(egress) => update(index, { egress })}
+                />
               )}
             </Card>
           </div>

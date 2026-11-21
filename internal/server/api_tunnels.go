@@ -82,7 +82,9 @@ func (a *App) validateTunnel(ctx context.Context, user store.User, orgID string,
 		id           string
 		allowBastion bool
 	}
-	endpoints := []tunnelEndpoint{{id: c.EntryTargetID, allowBastion: user.IsSystemAdmin || c.Protocol == "http"}}
+	// Anyone may listen on the bastion; only a system administrator may send
+	// traffic out of it, because that exposes the host's own network position.
+	endpoints := []tunnelEndpoint{{id: c.EntryTargetID, allowBastion: true}}
 	if c.Protocol == "http" {
 		if _, err := forward.HTTPListeners(c.HTTP); err != nil {
 			return err

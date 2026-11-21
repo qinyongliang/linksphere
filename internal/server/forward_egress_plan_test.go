@@ -266,6 +266,40 @@ func TestValidateTunnelPortRulesAndEgress(t *testing.T) {
 		t.Fatal("accepted UDP SSH exit in multi-port mode")
 	}
 }
+
+// The bastion may be an entry for any organization admin, but only a system
+// administrator may send traffic out of it.
+func TestValidateTunnelBastionEntryAndExit(t *testing.T) {
+	app, admin, o := tunnelFixture(t)
+	attachForwardTestAgent(t, app, "bastion-roles")
+	agentExit := tunnelAgentTarget(t, app, admin, o, "bastion-roles")
+	ctx := context.Background()
+	config := store.TunnelConfig{
+		Protocol:     "port",
+		Name:         "bastion roles",
+		ExitTargetID: agentExit.ID,
+		PortRules: []protocoltypes.PortRule{
+			egressRule("a", freeTunnelPort(t), []string{"tcp"}, nil),
+		},
+	}
+	if err := app.validateTunnel(ctx, admin, o.ID, config); err != nil {
+		t.Fatalf("rejected bastion entry for a system admin: %v", err)
+	}
+	operator := admin
+	operator.IsSystemAdmin = false
+	if err := app.validateTunnel(ctx, operator, o.ID, config); err != nil {
+		t.Fatalf("rejected bastion entry for an organization admin: %v", err)
+	}
+	bastionExit := config
+	bastionExit.ExitTargetID = ""
+	if err := app.validateTunnel(ctx, admin, o.ID, bastionExit); err != nil {
+		t.Fatalf("rejected bastion exit for a system admin: %v", err)
+	}
+	err := app.validateTunnel(ctx, operator, o.ID, bastionExit)
+	if err == nil || !strings.Contains(err.Error(), "bastion endpoints require system admin access") {
+		t.Fatalf("accepted bastion exit for an organization admin: %v", err)
+	}
+}
 func TestTargetNetInfoRequiresAgentEndpoint(t *testing.T) {
 	app, u, o := tunnelFixture(t)
 	ctx := context.Background()
