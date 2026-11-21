@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/qinyongliang/linksphere/internal/egress"
 	"github.com/qinyongliang/linksphere/internal/forward"
 	"github.com/qinyongliang/linksphere/internal/protocol"
 	"github.com/qinyongliang/linksphere/internal/tunnel"
@@ -97,6 +98,19 @@ func (c *Client) forwarder() (*edgeForwarder, error) {
 	}
 	return m, nil
 }
+// egressPools returns the process-wide IPv6 allocator registry so every forward
+// path on this Agent shares one allocation sequence per pool key.
+func (c *Client) egressPools() *egress.Pools {
+	// This must not reuse forwardMu: forwarder() holds it while it applies the
+	// restored rules, and apply() asks for the allocator.
+	c.egressMu.Lock()
+	defer c.egressMu.Unlock()
+	if c.egressRegistry == nil {
+		c.egressRegistry = egress.NewPools()
+	}
+	return c.egressRegistry
+}
+
 func (c *Client) closeForwarder() {
 	c.forwardMu.Lock()
 	m := c.edge
@@ -186,17 +200,35 @@ func (m *edgeForwarder) apply(d protocol.ForwardDeployment) {
 			return
 		}
 	}
-	local := map[string]forward.DialFunc{}
+	// localTarget dials the route destination, or the client-chosen target for a
+	// dynamic proxy route when target is not empty.
+	localTarget := map[string]func(context.Context, string) (net.Conn, error){}
 	links := map[string]string{}
 	sshDials := map[string]forward.DialFunc{}
+	dynamic := map[string]bool{}
+	pools := m.client.egressPools()
 	for _, route := range d.Routes {
+		dynamic[route.ID] = route.Dynamic
 		if route.LinkID != "" {
 			links[route.ID] = route.LinkID
 			continue
 		}
 		if len(route.Hops) == 0 {
-			local[route.ID] = func(c context.Context, _ string) (net.Conn, error) {
-				return forward.DialNetwork(c, route.Network, route.Address)
+			// The exit machine opens the destination socket, so it applies the
+			// egress selection: default host routing, a pinned interface, an
+			// IPv6 allocation pool or an upstream proxy.
+			dialer, e := egress.FromRoute(route.Egress, pools)
+			if e != nil {
+				r.err = e.Error()
+				r.close()
+				return
+			}
+			routeDialer, fixed := dialer, route.Address
+			localTarget[route.ID] = func(c context.Context, target string) (net.Conn, error) {
+				if target == "" {
+					target = fixed
+				}
+				return routeDialer.DialContext(c, route.Network, target)
 			}
 			continue
 		}
@@ -221,23 +253,49 @@ func (m *edgeForwarder) apply(d protocol.ForwardDeployment) {
 			}
 			sshDials[key] = base
 		}
-		local[route.ID] = func(c context.Context, _ string) (net.Conn, error) { return base(c, route.Address) }
+		routeBase, fixed := base, route.Address
+		localTarget[route.ID] = func(c context.Context, target string) (net.Conn, error) {
+			if target == "" {
+				target = fixed
+			}
+			return routeBase(c, target)
+		}
 	}
-	dial := func(c context.Context, id string) (net.Conn, error) {
-		if fn := local[id]; fn != nil {
-			return fn(c, id)
+	// dialTarget also serves proxy listeners: for a dynamic route the client's
+	// destination replaces the route's fixed address.
+	dialTarget := func(c context.Context, id, target string) (net.Conn, error) {
+		if fn := localTarget[id]; fn != nil {
+			return fn(c, target)
 		}
 		p := m.peer(links[id])
 		if p == nil || !p.Alive() {
 			return nil, errors.New("edge exit channel unavailable")
 		}
-		return p.Dial(c, id)
+		return p.DialTarget(c, id, target)
 	}
+	dial := func(c context.Context, id string) (net.Conn, error) { return dialTarget(c, id, "") }
 	direct := func(id string) bool {
 		p := m.peer(links[id])
 		return links[id] == "" || (p != nil && p.Stable.Direct())
 	}
-	if d.Protocol == "port" {
+	if d.Protocol == "port" && len(d.PortRules) > 0 {
+		// Multi-port configuration: every rule binds its own listen address and
+		// dials through its own route grants.
+		rules := make([]forward.RuleSpec, 0, len(d.PortRules))
+		for _, rule := range d.PortRules {
+			// A rule with listen_port_end covers every port in the range. All of
+			// them share the rule's route grants, so the exit machine applies the
+			// same egress selection (and its allocation pool) to each connection
+			// regardless of which port the client used.
+			destination := forward.Location{ID: rule.ID, Host: rule.DestinationHost, Port: rule.DestinationPort}
+			routeIDs := map[string]string{}
+			for _, network := range rule.Transports {
+				routeIDs[network] = rule.ID + ":" + network
+			}
+			rules = append(rules, forward.ExpandPortRule(rule, routeIDs, destination)...)
+		}
+		r.runtime, err = forward.StartRules(ctx, rules, dialTarget, l.TrafficRecorder(), direct, listen)
+	} else if d.Protocol == "port" {
 		r.runtime, err = forward.StartPort(ctx, d.ListenAddress, d.Transports, *d.Destination, dial, l.TrafficRecorder(), direct, func() (net.Listener, error) { return listen(d.ListenAddress) })
 	} else {
 		r.runtime, err = forward.StartHTTP(ctx, d.HTTP, listen, dial, l, direct)
@@ -473,7 +531,7 @@ func (c *Client) handleForwardPeer(stream io.ReadWriteCloser, reader *bufio.Read
 		ctx, cancel = context.WithDeadline(context.Background(), time.UnixMilli(in.ExpiresAt))
 	}
 	defer cancel()
-	dials := map[string]forward.DialFunc{}
+	dials := map[string]forward.TargetDialFunc{}
 	var closers []io.Closer
 	defer func() {
 		for _, c := range closers {
@@ -481,14 +539,27 @@ func (c *Client) handleForwardPeer(stream io.ReadWriteCloser, reader *bufio.Read
 		}
 	}()
 	shared := map[string]forward.DialFunc{}
+	pools := m.client.egressPools()
 	for _, route := range in.Routes {
 		if route.LinkID != "" {
 			protocol.WriteJSONLine(stream, protocol.StreamResponse{Error: "nested edge links forbidden"})
 			return
 		}
 		if len(route.Hops) == 0 {
-			dials[route.ID] = func(ctx context.Context, _ string) (net.Conn, error) {
-				return forward.DialNetwork(ctx, route.Network, route.Address)
+			// This machine is the exit: it applies the route's egress selection
+			// when it opens the destination socket.
+			dialer, e := egress.FromRoute(route.Egress, pools)
+			if e != nil {
+				protocol.WriteJSONLine(stream, protocol.StreamResponse{Error: e.Error()})
+				return
+			}
+			routeDialer, fixed := dialer, route.Address
+			dials[route.ID] = func(ctx context.Context, _, target string) (net.Conn, error) {
+				// A dynamic grant carries the proxy client's destination.
+				if target == "" {
+					target = fixed
+				}
+				return routeDialer.DialContext(ctx, route.Network, target)
 			}
 		} else {
 			if route.Network != "tcp" {
@@ -507,7 +578,13 @@ func (c *Client) handleForwardPeer(stream io.ReadWriteCloser, reader *bufio.Read
 				base = func(ctx context.Context, a string) (net.Conn, error) { return client.DialContext(ctx, "tcp", a) }
 				shared[string(keyBytes)] = base
 			}
-			dials[route.ID] = func(ctx context.Context, _ string) (net.Conn, error) { return base(ctx, route.Address) }
+			routeBase, fixed := base, route.Address
+			dials[route.ID] = func(ctx context.Context, _, target string) (net.Conn, error) {
+				if target == "" {
+					target = fixed
+				}
+				return routeBase(ctx, target)
+			}
 		}
 	}
 	if protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: true}) != nil {
@@ -526,13 +603,21 @@ func (c *Client) handleForwardPeer(stream io.ReadWriteCloser, reader *bufio.Read
 	m.peers.Store("exit:"+in.LinkID, p)
 	m.mu.Unlock()
 	defer m.peers.CompareAndDelete("exit:"+in.LinkID, p)
-	p.Serve(ctx, func(ctx context.Context, id string) (net.Conn, error) {
+	dynamic := map[string]bool{}
+	for _, route := range in.Routes {
+		dynamic[route.ID] = route.Dynamic
+	}
+	p.Serve(ctx, func(ctx context.Context, id, target string) (net.Conn, error) {
 		fn := dials[id]
 		if fn == nil {
 			return nil, errors.New("unauthorized route")
 		}
-		return fn(ctx, id)
-	})
+		// Only a dynamic (proxy) grant may carry a client-chosen destination.
+		if target != "" && !dynamic[id] {
+			return nil, errors.New("route does not accept a client destination")
+		}
+		return fn(ctx, id, target)
+	}, func(id string) bool { return dynamic[id] })
 }
 
 // Delegated SSH credentials are encrypted at rest with a per-Agent local key.

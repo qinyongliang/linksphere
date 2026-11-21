@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/hashicorp/yamux"
 	"github.com/qinyongliang/linksphere/internal/protocol"
+	protocoltypes "github.com/qinyongliang/linksphere/internal/protocol/types"
 	"github.com/qinyongliang/linksphere/internal/store"
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -478,6 +479,13 @@ func dialTunnelAgent(ctx context.Context, session *yamux.Session, destination st
 	return dialTunnelAgentNetwork(ctx, session, destination, "tcp")
 }
 func dialTunnelAgentNetwork(ctx context.Context, session *yamux.Session, destination, network string) (net.Conn, error) {
+	return dialTunnelAgentEgress(ctx, session, destination, network, nil)
+}
+
+// dialTunnelAgentEgress asks an Agent to open the destination socket with an
+// explicit egress selection. The Agent is the exit machine, so it owns the
+// interface, address pool or upstream proxy choice.
+func dialTunnelAgentEgress(ctx context.Context, session *yamux.Session, destination, network string, spec *protocoltypes.EgressSpec) (net.Conn, error) {
 	stream, err := session.OpenStream()
 	if err != nil {
 		return nil, err
@@ -485,7 +493,7 @@ func dialTunnelAgentNetwork(ctx context.Context, session *yamux.Session, destina
 	stop := context.AfterFunc(ctx, func() { _ = stream.Close() })
 	defer stop()
 	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
-	err = protocol.WriteJSONLine(stream, protocol.StreamRequest{Type: network, Target: destination})
+	err = protocol.WriteJSONLine(stream, protocol.StreamRequest{Type: network, Target: destination, Egress: spec})
 	reader := bufio.NewReader(stream)
 	if err == nil {
 		response, e := protocol.ReadJSONLine[protocol.StreamResponse](reader)

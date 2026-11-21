@@ -35,6 +35,9 @@ type Location struct {
 	StripPrefix  bool              `json:"strip_prefix"`
 	PreserveHost bool              `json:"preserve_host"`
 	Headers      map[string]string `json:"headers,omitempty"`
+	// Egress is applied by the machine that opens the upstream socket, which is
+	// this location's exit machine.
+	Egress *EgressSpec `json:"egress,omitempty"`
 }
 
 func (l Location) Address() string { return net.JoinHostPort(l.Host, fmt.Sprint(l.Port)) }

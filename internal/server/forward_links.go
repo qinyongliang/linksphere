@@ -97,5 +97,9 @@ func (m *edgeForwardManager) serveLink(entry string, spec forwardLinkSpec) {
 			c.Close()
 		}
 	}()
-	p.Serve(m.ctx, dial)
+	dynamic := map[string]bool{}
+	for _, route := range spec.peer.Routes {
+		dynamic[route.ID] = route.Dynamic
+	}
+	p.Serve(m.ctx, dial, func(id string) bool { return dynamic[id] })
 }

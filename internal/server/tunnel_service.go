@@ -42,6 +42,17 @@ func (a *App) saveManagedTunnel(ctx context.Context, actor store.User, t store.T
 		t.ListenHost, t.ListenPort = listeners[0].Host, listeners[0].Port
 	}
 	t.DestinationHost = strings.TrimSpace(t.DestinationHost)
+	// A multi-port configuration keeps the legacy single-port fields pointed at its
+	// first rule so older consoles and status views still show a real endpoint.
+	// Rules() remains the source of truth for the data plane.
+	if t.MultiPort() {
+		first := t.PortRules[0]
+		t.ListenHost, t.ListenPort = first.ListenHost, first.ListenPort
+		t.DestinationHost, t.DestinationPort = first.DestinationHost, first.DestinationPort
+		if len(first.Transports) > 0 {
+			t.Transports = first.Transports
+		}
+	}
 	if err := a.validateTunnel(ctx, actor, t.OrganizationID, t.TunnelConfig); err != nil {
 		return apiTunnel{}, tunnelConfigError{err}
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qinyongliang/linksphere/internal/forward"
+	protocoltypes "github.com/qinyongliang/linksphere/internal/protocol/types"
 	"github.com/qinyongliang/linksphere/internal/store"
 )
 
@@ -35,13 +36,13 @@ func (a *App) validateTunnel(ctx context.Context, user store.User, orgID string,
 	if strings.TrimSpace(c.Name) == "" || len(c.Name) > 128 {
 		return errors.New("name must contain 1–128 characters")
 	}
-	if c.Protocol != "http" && net.ParseIP(c.ListenHost) == nil {
+	if c.Protocol != "http" && !c.MultiPort() && net.ParseIP(c.ListenHost) == nil {
 		return errors.New("listen host must be an IP address")
 	}
-	if c.Protocol != "http" && (c.ListenPort < 1 || c.ListenPort > 65535 || c.DestinationPort < 1 || c.DestinationPort > 65535) {
+	if c.Protocol != "http" && !c.MultiPort() && (c.ListenPort < 1 || c.ListenPort > 65535 || c.DestinationPort < 1 || c.DestinationPort > 65535) {
 		return errors.New("ports must be between 1 and 65535")
 	}
-	if c.Protocol != "http" && (strings.TrimSpace(c.DestinationHost) == "" || len(c.DestinationHost) > 253 || strings.ContainsAny(c.DestinationHost, " /\\\t\r\n")) {
+	if c.Protocol != "http" && !c.MultiPort() && !validDestinationHost(c.DestinationHost) {
 		return errors.New("invalid destination host")
 	}
 	if c.DurationSeconds < 0 || c.DurationSeconds > 365*24*3600 {
@@ -52,19 +53,30 @@ func (a *App) validateTunnel(ctx context.Context, user store.User, orgID string,
 	}
 	udp := false
 	if c.Protocol == "port" {
-		if len(c.Transports) == 0 {
-			return errors.New("select at least one transport: tcp or udp")
-		}
-		seen := map[string]bool{}
-		for _, network := range c.Transports {
-			if (network != "tcp" && network != "udp") || seen[network] {
-				return errors.New("transports must contain unique tcp and/or udp values")
+		if c.MultiPort() {
+			// Multi-port configurations carry transports per rule; the legacy
+			// top-level list only mirrors the first rule.
+			if err := validatePortRules(c.PortRules); err != nil {
+				return err
 			}
-			seen[network] = true
-			udp = udp || network == "udp"
+			udp = portRulesUseUDP(c.PortRules)
+		} else {
+			if len(c.Transports) == 0 {
+				return errors.New("select at least one transport: tcp or udp")
+			}
+			seen := map[string]bool{}
+			for _, network := range c.Transports {
+				if (network != "tcp" && network != "udp") || seen[network] {
+					return errors.New("transports must contain unique tcp and/or udp values")
+				}
+				seen[network] = true
+				udp = udp || network == "udp"
+			}
 		}
 	} else if len(c.Transports) != 0 {
 		return errors.New("transports require port protocol")
+	} else if len(c.PortRules) != 0 {
+		return errors.New("port rules require port protocol")
 	}
 	type tunnelEndpoint struct {
 		id           string
@@ -125,6 +137,122 @@ func (a *App) validateTunnel(ctx context.Context, user store.User, orgID string,
 			target, err = a.store.Repository().GetSSHTarget(ctx, target.ProxyTargetID)
 			if err != nil || target.OwnerType != "organization" || target.OwnerID != orgID {
 				return errors.New("jump host must belong to this organization")
+			}
+		}
+	}
+	// Advanced egress selection runs on the machine that opens the destination
+	// socket. Only an Agent can report and apply an interface, address pool or
+	// proxy selection, so such a rule needs an Agent exit; an empty exit is the
+	// bastion, which applies the selection itself.
+	if c.Protocol == "port" {
+		for _, rule := range c.Rules() {
+			if rule.Egress == nil || rule.Egress.IsDefault() {
+				continue
+			}
+			if c.ExitTargetID == "" {
+				continue
+			}
+			agentID, err := a.forwardAgentID(ctx, c.ExitTargetID)
+			if err != nil || agentID == "" {
+				return errors.New("egress interface/pool selection requires an Agent exit machine")
+			}
+		}
+	}
+	return nil
+}
+
+// validDestinationHost accepts a hostname or IP literal without whitespace,
+// separators or control characters.
+func validDestinationHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" || len(host) > 253 || strings.ContainsAny(host, " /\\\t\r\n") {
+		return false
+	}
+	return !strings.Contains(host, "://")
+}
+
+func validPortTransports(transports []string) bool {
+	if len(transports) == 0 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, network := range transports {
+		if (network != "tcp" && network != "udp") || seen[network] {
+			return false
+		}
+		seen[network] = true
+	}
+	return true
+}
+
+func portRulesUseUDP(rules []protocoltypes.PortRule) bool {
+	for _, rule := range rules {
+		for _, network := range rule.Transports {
+			if network == "udp" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// validatePortRules enforces the multi-port contract: 1..64 rules, unique
+// non-empty IDs, an IP listen host, valid ports, unique listen endpoints,
+// non-empty tcp/udp transports, a valid destination and a valid egress spec.
+func validatePortRules(rules []protocoltypes.PortRule) error {
+	if len(rules) == 0 {
+		return errors.New("port rules required")
+	}
+	if len(rules) > 64 {
+		return errors.New("at most 64 port rules are supported")
+	}
+	ids := map[string]bool{}
+	listen := map[string]bool{}
+	// Reserved ports per listen host detect overlaps between ranges and single
+	// ports, not just exact duplicates.
+	reserved := map[string]map[int]bool{}
+	for _, rule := range rules {
+		id := strings.TrimSpace(rule.ID)
+		if id == "" || len(id) > 64 {
+			return errors.New("port rule id must contain 1–64 characters")
+		}
+		if ids[id] {
+			return errors.New("port rule ids must be unique")
+		}
+		ids[id] = true
+		if net.ParseIP(strings.TrimSpace(rule.ListenHost)) == nil {
+			return errors.New("port rule listen host must be an IP address")
+		}
+		if rule.ListenPort < 1 || rule.ListenPort > 65535 || rule.DestinationPort < 1 || rule.DestinationPort > 65535 {
+			return errors.New("port rule ports must be between 1 and 65535")
+		}
+		if err := rule.ValidateRange(); err != nil {
+			return err
+		}
+		host := strings.TrimSpace(rule.ListenHost)
+		if reserved[host] == nil {
+			reserved[host] = map[int]bool{}
+		}
+		first, last := rule.PortRange()
+		for port := first; port <= last; port++ {
+			if reserved[host][port] {
+				return errors.New("port rules must use unique listen host and port pairs")
+			}
+			reserved[host][port] = true
+			listen[net.JoinHostPort(host, strconv.Itoa(port))] = true
+		}
+		if err := rule.ValidateProtocol(); err != nil {
+			return err
+		}
+		if !validPortTransports(rule.Transports) {
+			return errors.New("port rule transports must contain unique tcp and/or udp values")
+		}
+		if !validDestinationHost(rule.DestinationHost) {
+			return errors.New("port rule destination host is invalid")
+		}
+		if rule.Egress != nil {
+			if err := rule.Egress.Validate(); err != nil {
+				return err
 			}
 		}
 	}

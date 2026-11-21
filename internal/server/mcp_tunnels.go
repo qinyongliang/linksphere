@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/qinyongliang/linksphere/internal/forward"
+	protocoltypes "github.com/qinyongliang/linksphere/internal/protocol/types"
 	"github.com/qinyongliang/linksphere/internal/store"
 )
 
@@ -16,6 +17,9 @@ type mcpTunnelIDInput struct {
 }
 type mcpTunnelListInput struct {
 	OrganizationID string `json:"organization_id"`
+}
+type mcpTunnelNetInfoInput struct {
+	TargetID string `json:"target_id" jsonschema:"Machine ID whose egress interfaces should be reported; Agent-backed machines answer with their interface list."`
 }
 type mcpTunnelSaveInput struct {
 	Transports      []string            `json:"transports,omitempty" jsonschema:"Port transports: tcp, udp, or both. Defaults to tcp. UDP requires bastion or Agent endpoints."`
@@ -30,6 +34,7 @@ type mcpTunnelSaveInput struct {
 	DestinationHost string              `json:"destination_host,omitempty" jsonschema:"Destination resolved and accessed from the exit machine."`
 	DestinationPort int                 `json:"destination_port,omitempty"`
 	DurationSeconds int64               `json:"duration_seconds,omitempty" jsonschema:"Duration per enable; 0 is permanent; maximum 365 days. Reconnecting does not reset expiration."`
+	PortRules       []protocoltypes.PortRule `json:"port_rules,omitempty" jsonschema:"Multi-port rules (1-64). Each rule has id, listen_host, listen_port, transports (tcp/udp), destination_host, destination_port, optional listen_port_end (inclusive range such as 10000-11000, max 1024 ports), protocol (auto sniffs SOCKS5/SOCKS4/HTTP proxy incl. CONNECT, tcp is a raw stream, http and socks pin one proxy protocol) and egress. When port_rules is present listen_port is not required at the top level. egress selects how the exit machine opens the destination socket: host egress (default), a selected NIC via interface, an IPv6 allocation pool via ipv6_mode=pool with pool_start/pool_size/pool_mode, or an upstream socks5/http proxy via mode=proxy and proxy_url. Advanced egress requires an Agent exit machine; tunnel_net_info reports the interfaces an Agent can offer."`
 }
 type mcpTunnelUpdateInput struct {
 	Transports      *[]string           `json:"transports,omitempty"`
@@ -44,6 +49,7 @@ type mcpTunnelUpdateInput struct {
 	DestinationHost *string             `json:"destination_host,omitempty"`
 	DestinationPort *int                `json:"destination_port,omitempty"`
 	DurationSeconds *int64              `json:"duration_seconds,omitempty"`
+	PortRules       *[]protocoltypes.PortRule `json:"port_rules,omitempty" jsonschema:"Replace the multi-port rule list (1-64). Each rule has id, listen_host, listen_port, transports (tcp/udp), destination_host, destination_port, optional listen_port_end (inclusive range, max 1024 ports) and egress; egress supports host egress, a selected NIC, an IPv6 allocation pool, or an upstream socks5/http proxy. Send an empty array to fall back to the single-port fields."`
 }
 type mcpTunnelOutput struct {
 	Tunnel apiTunnel `json:"tunnel"`
@@ -111,7 +117,7 @@ func (a *App) addMCPTunnelTools(s *mcp.Server, initialActor store.User) {
 			if err != nil {
 				return nil, mcpTunnelOutput{}, err
 			}
-			t := store.Tunnel{OrganizationID: in.OrganizationID, CreatedBy: actor.ID, TunnelConfig: store.TunnelConfig{Protocol: in.Protocol, Transports: in.Transports, HTTP: in.HTTP, Name: in.Name, EntryTargetID: in.EntryTargetID, ListenHost: in.ListenHost, ListenPort: in.ListenPort, ExitTargetID: in.ExitTargetID, DestinationHost: in.DestinationHost, DestinationPort: in.DestinationPort, DurationSeconds: in.DurationSeconds}}
+			t := store.Tunnel{OrganizationID: in.OrganizationID, CreatedBy: actor.ID, TunnelConfig: store.TunnelConfig{Protocol: in.Protocol, Transports: in.Transports, HTTP: in.HTTP, Name: in.Name, EntryTargetID: in.EntryTargetID, ListenHost: in.ListenHost, ListenPort: in.ListenPort, ExitTargetID: in.ExitTargetID, DestinationHost: in.DestinationHost, DestinationPort: in.DestinationPort, DurationSeconds: in.DurationSeconds, PortRules: in.PortRules}}
 			saved, err := a.saveManagedTunnel(ctx, actor, t)
 			return nil, mcpTunnelOutput{saved}, err
 		})
@@ -164,6 +170,9 @@ func (a *App) addMCPTunnelTools(s *mcp.Server, initialActor store.User) {
 			if in.DurationSeconds != nil {
 				t.DurationSeconds = *in.DurationSeconds
 			}
+			if in.PortRules != nil {
+				t.PortRules = *in.PortRules
+			}
 			if t.Protocol == "http" && (in.ListenHost != nil || in.ListenPort != nil) {
 				return nil, mcpTunnelOutput{}, errors.New("configure HTTP bindings through http.listeners")
 			}
@@ -205,6 +214,19 @@ func (a *App) addMCPTunnelTools(s *mcp.Server, initialActor store.User) {
 				return nil, mcpTunnelOutput{saved}, err
 			})
 	}
+	mcp.AddTool(s, &mcp.Tool{Name: "tunnel_net_info", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}, Description: "Report the egress network capability of one machine: hostname, platform, default IPv4/IPv6 source addresses, every interface with its addresses, and how extra IPv6 addresses can be carried. Read-only; use it to pick an egress interface, address family or IPv6 pool before saving a port rule. Machines reachable only over SSH report supported=false because interface discovery requires an Agent endpoint."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in mcpTunnelNetInfoInput) (*mcp.CallToolResult, apiTargetNetInfo, error) {
+			actor, err := a.tunnelActor(ctx, initialActor)
+			if err != nil {
+				return nil, apiTargetNetInfo{}, err
+			}
+			target, err := a.targetForUser(ctx, in.TargetID, actor)
+			if err != nil {
+				return nil, apiTargetNetInfo{}, err
+			}
+			out, err := a.targetNetInfo(ctx, target, nil)
+			return nil, out, err
+		})
 	mcp.AddTool(s, &mcp.Tool{Name: "tunnel_delete", Description: "Delete a persistent tunnel configuration and stop its active connections. Historical audit traffic remains retained."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in mcpTunnelIDInput) (*mcp.CallToolResult, mcpOK, error) {
 			actor, err := a.tunnelActor(ctx, initialActor)

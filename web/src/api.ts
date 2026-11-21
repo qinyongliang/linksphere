@@ -24,6 +24,7 @@ import type {
   Providers,
   PublicKey,
   Runtime,
+  NetInfo,
   Target,
   TemporarySSHAuthorization,
   BatchCommandHistory,
@@ -154,6 +155,7 @@ export const api = {
   targetSystem: (targetID: string) => request<TargetSystemSnapshot>(`/api/targets/${targetID}/system`),
   targetSystemMetrics: (targetID: string) => request<TargetSystemSnapshot>(`/api/targets/${targetID}/system?scope=metrics`),
   targetSystemFilesystems: (targetID: string) => request<TargetSystemSnapshot>(`/api/targets/${targetID}/system?scope=filesystems`),
+  targetNetInfo: (targetID: string) => request<{ supported: boolean; net_info?: NetInfo; reason?: string }>(`/api/targets/${targetID}/net`),
   manualReviews: (orgID: string, timeoutSeconds = 25, knownIDs: string[] = [], sessionID = "") =>
     request<{ reviews: ManualReview[] }>(`/api/manual-reviews?${queryString({
       organization_id: orgID,

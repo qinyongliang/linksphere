@@ -1,0 +1,19 @@
+.egress-editor{display:grid;gap:12px;margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--surface-alt)}
+.egress-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.egress-grid .ant-input-number{width:100%}
+.egress-grid .egress-wide{grid-column:1/-1}
+.egress-hint{margin:0;color:var(--muted);font-size:12px;line-height:1.6}
+.egress-hint.danger{color:var(--danger)}
+.forward-egress{margin-top:12px}
+.port-rule-list{display:grid;gap:8px;margin-top:12px}
+.port-rule-row{display:grid;grid-template-columns:auto auto auto auto minmax(0,1fr);align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface-alt)}
+.port-rule-row code{font-size:13px}
+.port-rule-tags{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.port-rules-editor{display:grid;gap:12px;margin-top:16px}
+.port-rules-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}
+.port-rule-card .ant-card-body{display:grid;gap:12px}
+.port-rule-grid{display:grid;grid-template-columns:1.2fr .7fr 1fr 1.2fr .7fr;gap:12px}
+.port-rule-grid .ant-input-number{width:100%}
+.port-rule-grid .ant-checkbox-group{display:flex;align-items:center;gap:12px;min-height:40px}
+.port-rule-actions{display:flex;gap:6px}
+@media(max-width:900px){.egress-grid,.port-rule-grid{grid-template-columns:1fr}.port-rule-row{grid-template-columns:1fr}}

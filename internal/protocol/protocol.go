@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	protocoltypes "github.com/qinyongliang/linksphere/internal/protocol/types"
 )
 
 const (
@@ -32,6 +33,8 @@ const (
 	StreamTunnelPeer       = "tunnel-peer"
 	StreamTunnelListen     = "tunnel-listen"
 	StreamTunnelConnection = "tunnel-connection"
+	// StreamNetInfo reports the egress interfaces and addresses of one machine.
+	StreamNetInfo = "net-info"
 )
 
 const (
@@ -84,6 +87,8 @@ type StreamRequest struct {
 	Target        string               `json:"target,omitempty"`
 	Width         int                  `json:"width,omitempty"`
 	Height        int                  `json:"height,omitempty"`
+	// Egress asks a machine to report or test its outbound network selection.
+	Egress *protocoltypes.EgressSpec `json:"egress,omitempty"`
 }
 
 // The server selects the destination after enforcing SFTP upload permissions.
@@ -124,6 +129,10 @@ type StreamResponse struct {
 	AssignedAgentID       string   `json:"assigned_agent_id,omitempty"`
 	TargetID              string   `json:"target_id,omitempty"`
 	TargetAlias           string   `json:"target_alias,omitempty"`
+	// NetInfo answers StreamNetInfo; EgressError explains an unsupported egress
+	// selection on this machine.
+	NetInfo     *protocoltypes.NetInfo `json:"net_info,omitempty"`
+	EgressError string                 `json:"egress_error,omitempty"`
 }
 
 type ShellCommand struct {

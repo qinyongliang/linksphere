@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/qinyongliang/linksphere/internal/branding"
+	"github.com/qinyongliang/linksphere/internal/egress"
 	"github.com/qinyongliang/linksphere/internal/protocol"
 	"github.com/qinyongliang/linksphere/internal/relay"
 
@@ -25,6 +26,8 @@ import (
 
 type Client struct {
 	forwardMu       sync.Mutex
+	egressMu        sync.Mutex
+	egressRegistry  *egress.Pools
 	edge            *edgeForwarder
 	cfg             Config
 	id              string

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"github.com/qinyongliang/linksphere/internal/egress"
 	"github.com/qinyongliang/linksphere/internal/forward"
 	"github.com/qinyongliang/linksphere/internal/protocol"
 	"github.com/qinyongliang/linksphere/internal/store"
@@ -64,12 +65,15 @@ type edgeForwardManager struct {
 	acks        map[string]map[string]int64
 	lastCleanup time.Time
 	links       map[string]bool
-	wg          sync.WaitGroup
+	// pools holds one IPv6 allocation sequence per exit machine and pool key, so
+	// the bastion exit path allocates from the same sequence across reconnects.
+	pools *egress.Pools
+	wg    sync.WaitGroup
 }
 
 func newEdgeForwardManager(a *App) *edgeForwardManager {
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &edgeForwardManager{app: a, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1), plans: map[string]forwardPlan{}, runs: map[string]*forwardServerRun{}, reports: map[string]forwardObservation{}, logs: map[string]*forward.Logs{}, acks: map[string]map[string]int64{}, trafficAcks: map[string]map[string]int64{}, links: map[string]bool{}}
+	m := &edgeForwardManager{app: a, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1), plans: map[string]forwardPlan{}, runs: map[string]*forwardServerRun{}, reports: map[string]forwardObservation{}, logs: map[string]*forward.Logs{}, acks: map[string]map[string]int64{}, trafficAcks: map[string]map[string]int64{}, links: map[string]bool{}, pools: egress.NewPools()}
 	go m.loop()
 	return m
 }

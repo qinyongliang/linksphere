@@ -13,6 +13,11 @@ type ForwardRoute struct {
 	ID      string         `json:"id"`
 	Address string         `json:"address"`
 	Hops    []TunnelSSHHop `json:"hops,omitempty"`
+	// Egress is applied by the machine that opens the destination socket.
+	Egress *protocoltypes.EgressSpec `json:"egress,omitempty"`
+	// Dynamic marks a route whose destination is supplied per connection by the
+	// entry proxy listener (SOCKS/HTTP proxy) instead of the fixed Address.
+	Dynamic bool `json:"dynamic,omitempty"`
 	LinkID  string         `json:"link_id,omitempty"`
 }
 type ForwardDeployment struct {
@@ -26,6 +31,9 @@ type ForwardDeployment struct {
 	Destination   *protocoltypes.Location   `json:"destination,omitempty"`
 	Routes        []ForwardRoute            `json:"routes"`
 	ExpiresAt     int64                     `json:"expires_at,omitempty"`
+	// PortRules carries every listen port of a multi-port configuration. A
+	// deployment with one rule keeps the legacy ListenAddress/Destination pair.
+	PortRules []protocoltypes.PortRule `json:"port_rules,omitempty"`
 }
 type ForwardSync struct {
 	ReportOnly       bool                `json:"report_only,omitempty"`

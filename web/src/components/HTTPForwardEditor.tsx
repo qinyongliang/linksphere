@@ -1,6 +1,7 @@
 import { Button, Card, Input, InputNumber, Select, Switch, Tag } from "antd";
 import { Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { EgressEditor } from "./EgressEditor";
 import { MachinePicker } from "./MachinePicker";
 import { useI18n } from "../i18n";
 import type { ConsoleData, HTTPForwardConfig, HTTPForwardListener, HTTPForwardLocation, HTTPForwardServer, TunnelConfig } from "../types";
@@ -66,6 +67,9 @@ export function HTTPForwardEditor({data,config,onChange}:{data:ConsoleData;confi
      <label className="field"><span>{text("协议","Scheme")}</span><Select value={l.scheme} options={[{value:"http",label:"HTTP"},{value:"https",label:"HTTPS"}]} onChange={scheme=>updateLocation(i,j,{scheme})}/></label>
      <label className="field"><span>{text("服务 IP / 域名","Service IP / hostname")}</span><Input required value={l.host} onChange={e=>updateLocation(i,j,{host:e.target.value})}/></label>
      <label className="field"><span>{text("服务端口","Service port")}</span><InputNumber min={1} max={65535} value={l.port} onChange={v=>updateLocation(i,j,{port:v||80})}/></label>
+    </div>
+    <div className="forward-egress">
+     <EgressEditor value={l.egress} exitTargetID={l.exit_target_id} onChange={egress=>updateLocation(i,j,{egress})}/>
     </div>
     <div className="forward-switches">
      <label><Switch size="small" checked={l.strip_prefix} disabled={l.match.startsWith("~")} onChange={strip_prefix=>updateLocation(i,j,{strip_prefix})}/>{text("去掉匹配前缀","Strip matched prefix")}</label>

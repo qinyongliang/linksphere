@@ -245,7 +245,15 @@ func (r *Runtime) Alive() bool {
 }
 func (r *Runtime) State() RuntimeState {
 	if len(r.children) > 0 {
-		return r.children[0].State()
+		// Children share one runtimeCounters, so the counters of the first child
+		// already cover every listen port. Only the listen addresses differ.
+		addresses := make([]string, 0, len(r.children))
+		for _, child := range r.children {
+			addresses = append(addresses, strings.Split(child.State().ListenAddress, ", ")...)
+		}
+		state := r.children[0].State()
+		state.ListenAddress = compactListenAddresses(addresses)
+		return state
 	}
 	address := ""
 	if len(r.listeners) > 0 {

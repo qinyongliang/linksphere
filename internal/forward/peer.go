@@ -8,6 +8,7 @@ import (
 	"github.com/qinyongliang/linksphere/internal/tunnel"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -63,8 +64,18 @@ func (p *Peer) Alive() bool {
 	}
 }
 func (p *Peer) Dial(ctx context.Context, id string) (net.Conn, error) {
-	if len(id) > 128 {
-		return nil, errors.New("invalid route ID")
+	return p.dial(ctx, id, "")
+}
+
+// DialTarget opens a stream for a dynamic route: the destination socket is
+// chosen per connection by a proxy listener on the entry machine.
+func (p *Peer) DialTarget(ctx context.Context, id, target string) (net.Conn, error) {
+	return p.dial(ctx, id, target)
+}
+
+func (p *Peer) dial(ctx context.Context, id, target string) (net.Conn, error) {
+	if len(id) > 128 || len(target) > 512 || strings.ContainsAny(target, "\r\n") {
+		return nil, errors.New("invalid route ID or target")
 	}
 	s, err := p.Session.OpenStream()
 	if err != nil {
@@ -73,10 +84,16 @@ func (p *Peer) Dial(ctx context.Context, id string) (net.Conn, error) {
 	stop := context.AfterFunc(ctx, func() { s.Close() })
 	defer stop()
 	_ = s.SetDeadline(time.Now().Add(10 * time.Second))
-	// Route IDs are newline-free by configuration validation.
+	// Route IDs and dynamic targets are newline-free by validation.
 	if _, err = io.WriteString(s, id+"\n"); err != nil {
 		s.Close()
 		return nil, err
+	}
+	if target != "" {
+		if _, err = io.WriteString(s, target+"\n"); err != nil {
+			s.Close()
+			return nil, err
+		}
 	}
 	r := bufio.NewReaderSize(s, 256)
 	answer, err := r.ReadString('\n')
@@ -87,7 +104,13 @@ func (p *Peer) Dial(ctx context.Context, id string) (net.Conn, error) {
 	_ = s.SetDeadline(time.Time{})
 	return &peerConn{Stream: s, reader: r}, nil
 }
-func (p *Peer) Serve(ctx context.Context, dial DialFunc) {
+// TargetDialFunc opens the destination socket. target is empty for static routes
+// and carries the client-requested destination for dynamic proxy routes.
+type TargetDialFunc func(ctx context.Context, id, target string) (net.Conn, error)
+
+// Serve accepts upstream connection streams. dynamic reports which route IDs may
+// carry a client-chosen destination on the line after the route ID.
+func (p *Peer) Serve(ctx context.Context, dial TargetDialFunc, dynamic func(string) bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -110,7 +133,16 @@ func (p *Peer) Serve(ctx context.Context, dial DialFunc) {
 			if err != nil || len(id) > 129 {
 				return
 			}
-			conn, err := dial(ctx, id[:len(id)-1])
+			routeID := id[:len(id)-1]
+			target := ""
+			if dynamic != nil && dynamic(routeID) {
+				rawTarget, err := r.ReadSlice('\n')
+				if err != nil || len(rawTarget) > 513 {
+					return
+				}
+				target = string(rawTarget[:len(rawTarget)-1])
+			}
+			conn, err := dial(ctx, routeID, target)
 			if err != nil {
 				io.WriteString(s, "error\n")
 				return

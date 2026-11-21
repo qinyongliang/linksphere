@@ -157,6 +157,7 @@ func (a *App) apiRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/me/settings", a.requireUser(a.handleUpdateMySettings))
 	mux.HandleFunc("GET /api/targets/{id}/terminal/ws", a.requireUser(a.handleTargetTerminalWS))
 	mux.HandleFunc("GET /api/targets/{id}/system", a.requireUser(a.handleTargetSystem))
+	mux.HandleFunc("GET /api/targets/{id}/net", a.requireUser(a.handleTargetNetInfo))
 	mux.HandleFunc("GET /api/targets/{id}/files", a.requireUser(a.handleTargetFiles))
 	mux.HandleFunc("GET /api/targets/{id}/files/download", a.requireUser(a.handleTargetFileDownload))
 	mux.HandleFunc("GET /api/targets/{id}/files/download/ws", a.requireUser(a.handleTargetFileDownloadWS))

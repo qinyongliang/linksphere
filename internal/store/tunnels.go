@@ -23,7 +23,37 @@ type TunnelConfig struct {
 	DestinationHost string                    `json:"destination_host"`
 	DestinationPort int                       `json:"destination_port"`
 	DurationSeconds int64                     `json:"duration_seconds"`
+	// PortRules turns a port-forwarding configuration into several listen ports,
+	// each with its own transports, destination and egress selection. Configs
+	// saved before multi-port support leave this empty and use the fields above.
+	PortRules []protocoltypes.PortRule `json:"port_rules,omitempty"`
 }
+// Rules returns the effective port rules. A single-port configuration is
+// projected onto one rule so callers never branch on the legacy shape.
+func (c TunnelConfig) Rules() []protocoltypes.PortRule {
+	if len(c.PortRules) > 0 {
+		return c.PortRules
+	}
+	if c.Protocol != "" && c.Protocol != "port" {
+		return nil
+	}
+	transports := c.Transports
+	if len(transports) == 0 {
+		transports = []string{"tcp"}
+	}
+	return []protocoltypes.PortRule{{
+		ID:              "port",
+		ListenHost:      c.ListenHost,
+		ListenPort:      c.ListenPort,
+		Transports:      transports,
+		DestinationHost: c.DestinationHost,
+		DestinationPort: c.DestinationPort,
+	}}
+}
+
+// MultiPort reports whether the configuration uses the port rule list.
+func (c TunnelConfig) MultiPort() bool { return len(c.PortRules) > 0 }
+
 type Tunnel struct {
 	TunnelConfig
 	ID             string     `json:"id"`

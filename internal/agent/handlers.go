@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"github.com/qinyongliang/linksphere/internal/desktop"
+	"github.com/qinyongliang/linksphere/internal/egress"
 	"github.com/qinyongliang/linksphere/internal/forward"
+	protocoltypes "github.com/qinyongliang/linksphere/internal/protocol/types"
 	"io"
 	"log"
 	"net"
@@ -33,6 +35,8 @@ func (c *Client) handleStreamWithSession(stream io.ReadWriteCloser, session *yam
 		_ = desktop.Serve(context.Background(), stream, c.cfg.Desktop)
 	case protocol.StreamForwardSync:
 		c.handleForwardSync(stream, req)
+	case protocol.StreamNetInfo:
+		c.handleNetInfo(stream, req)
 	case protocol.StreamForwardLink:
 		c.handleForwardLink(stream, reader, req)
 	case protocol.StreamForwardPeer:
@@ -52,7 +56,7 @@ func (c *Client) handleStreamWithSession(stream io.ReadWriteCloser, session *yam
 	case protocol.StreamSFTP:
 		c.handleSFTP(stream, reader)
 	case protocol.StreamTCP, protocol.StreamUDP:
-		c.handlePort(stream, reader, req.Target, req.Type)
+		c.handlePort(stream, reader, req.Target, req.Type, req.Egress)
 	default:
 		_ = protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: false, Error: "unsupported stream type"})
 	}
@@ -79,14 +83,24 @@ type readWriteCloser struct {
 	io.Closer
 }
 
-func (c *Client) handlePort(stream io.ReadWriteCloser, reader *bufio.Reader, target, network string) {
+// handlePort opens the destination socket. The Agent is the exit machine, so an
+// egress selection from the rule is applied here: a pinned interface, an IPv6
+// allocation pool or an upstream proxy all act on this final socket.
+func (c *Client) handlePort(stream io.ReadWriteCloser, reader *bufio.Reader, target, network string, spec *protocoltypes.EgressSpec) {
 	if target == "" {
 		_ = protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: false, Error: "missing target"})
 		return
 	}
 	var conn net.Conn
 	var err error
-	if network == "udp" {
+	if spec != nil {
+		dialer, e := egress.FromRoute(spec, c.egressPools())
+		if e != nil {
+			_ = protocol.WriteJSONLine(stream, protocol.StreamResponse{OK: false, Error: e.Error()})
+			return
+		}
+		conn, err = dialer.DialContext(context.Background(), network, target)
+	} else if network == "udp" {
 		conn, err = forward.DialUDP(context.Background(), target)
 	} else {
 		conn, err = net.DialTimeout("tcp", target, 10*time.Second)

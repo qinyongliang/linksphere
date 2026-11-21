@@ -337,12 +337,13 @@ export type FileReadResult = {
   modified_at?: string;
 };
 
-export type HTTPForwardLocation = {id: string; name: string; match: "prefix" | "=" | "^~" | "~" | "~*"; path: string; exit_target_id: string; scheme: "http" | "https"; host: string; port: number; strip_prefix: boolean; preserve_host: boolean; headers?: Record<string,string>};
+export type HTTPForwardLocation = {id: string; name: string; match: "prefix" | "=" | "^~" | "~" | "~*"; path: string; exit_target_id: string; scheme: "http" | "https"; host: string; port: number; strip_prefix: boolean; preserve_host: boolean; headers?: Record<string,string>; egress?: EgressSpec};
 export type HTTPForwardServer = {id: string; name: string; hosts: string[]; locations: HTTPForwardLocation[]};
 export type HTTPForwardListener = {host: string; port: number};
 export type HTTPForwardConfig = {listeners: HTTPForwardListener[]; servers: HTTPForwardServer[]};
 export type TunnelConfig = {
  protocol?: "port" | "http"; transports?: ("tcp" | "udp")[]; http?: HTTPForwardConfig;
+ port_rules?: PortRule[];
  name: string; entry_target_id: string; listen_host: string; listen_port: number;
  exit_target_id: string; destination_host: string; destination_port: number; duration_seconds: number;
 };
@@ -359,3 +360,46 @@ export type TunnelTrafficStatistics = {interval_seconds: number; buckets: Tunnel
 export type TunnelCandidate = {address: string; port: number; protocol: string; type: string; network: string; interface?: string; local_address?: string; local_port?: number};
 export type TunnelPeerInfo = {active: boolean; state: string; local?: TunnelCandidate; remote?: TunnelCandidate; rtt_ms?: number; updated_at: string};
 export type TunnelConnectionPath = {id: string; entry_agent_id: string; exit_agent_id: string; entry?: TunnelPeerInfo; exit?: TunnelPeerInfo; updated_at: string};
+
+// Egress of the machine that opens the destination socket. An absent egress means
+// host egress: the exit machine routing table, dual stack.
+export type EgressFamily = "auto" | "ipv4" | "ipv6" | "both";
+export type EgressSpec = {
+  mode: "direct" | "proxy";
+  family: EgressFamily;
+  interface?: string;
+  ipv6_mode: "host" | "interface" | "pool";
+  pool_start?: string;
+  pool_size?: number;
+  pool_mode: "rotate" | "sticky";
+  proxy_url?: string;
+};
+// PortRule is one listen port of a port-forwarding tunnel. When port_rules is
+// present the single-port TunnelConfig fields are legacy fallbacks.
+export type PortRule = {
+  id: string;
+  name?: string;
+  listen_host?: string;
+  listen_port: number;
+  /** Inclusive end of a listen port range such as 10000-11000; absent for one port. */
+  listen_port_end?: number;
+  transports: ("tcp" | "udp")[];
+  /**
+   * Listen protocol of this port rule. Absent or "auto" sniffs the first bytes
+   * and serves SOCKS4/5, an HTTP proxy, or raw TCP to the destination; "tcp"
+   * keeps raw passthrough, "http"/"socks" pin one proxy protocol.
+   */
+  protocol?: "auto" | "tcp" | "http" | "socks";
+  destination_host: string;
+  destination_port: number;
+  egress?: EgressSpec;
+};
+export type NetAddress = {address: string; prefix?: number; family: string; scope?: string};
+export type NetInterface = {
+  name: string; up: boolean; loopback?: boolean; default4?: boolean; default6?: boolean; mtu?: number;
+  addresses?: NetAddress[];
+};
+export type NetInfo = {
+  hostname?: string; platform?: string; default4?: string; default6?: string;
+  interfaces: NetInterface[]; pool_source?: string;
+};

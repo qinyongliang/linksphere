@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Button,
+  Card,
   Checkbox,
   ConfigProvider,
   Input,
@@ -30,6 +31,7 @@ import {
 import { useState } from "react";
 import { api } from "../api";
 import { HTTPForwardEditor, HTTPForwardSummary, newHTTPConfig } from "../components/HTTPForwardEditor";
+import { EgressEditor, egressCopy, egressProblem, egressSummary } from "../components/EgressEditor";
 import { ForwardLogsDialog } from "../components/ForwardLogs";
 import { MachinePicker } from "../components/MachinePicker";
 import { TunnelErrorNotice } from "../components/TunnelErrorNotice";
@@ -47,7 +49,7 @@ import {
   formatBytes,
   tunnelTrafficCopy,
 } from "../components/TunnelTraffic";
-import type { ConsoleData, Target, Tunnel, TunnelConfig } from "../types";
+import type { ConsoleData, PortRule, Target, Tunnel, TunnelConfig } from "../types";
 
 const copy = {
   "zh-CN": {
@@ -129,6 +131,28 @@ const copy = {
     mixed: "部分直连",
     negotiating: "中转 · 尝试直连",
     relayPath: "中转",
+    portRules: "端口规则",
+    portRulesHint: "每条规则独立监听端口、目标地址与出口。",
+    rulesUnit: "条规则",
+    addRule: "添加规则",
+    portEnd: "结束端口",
+    portEndPlaceholder: "留空=单端口",
+    rangeHint: "端口区间内每个连接共用该规则的出口；IPv6 地址池按连接分配源地址。",
+    rangeInvalid: "结束端口需大于起始端口，且区间不超过 1024 个端口。",
+    removeRule: "删除规则",
+    moveUp: "上移规则",
+    moveDown: "下移规则",
+    ruleName: "规则名称",
+    rulePlaceholder: "可选，例如：MySQL",
+    ruleProtocol: "监听协议",
+    ruleProtocolAuto: "自动识别",
+    ruleProtocolTcp: "TCP 透传",
+    ruleProtocolHttp: "HTTP 代理",
+    ruleProtocolSocks: "SOCKS 代理",
+    ruleProtocolHelp:
+      "同一端口可用 curl -x http:// 或 socks5:// 访问，自动识别协议。",
+    invalidRule: "请补全每条规则的端口、目标地址与传输协议。",
+    ...egressCopy["zh-CN"],
   },
   en: {
     creator: "Created by",
@@ -215,6 +239,30 @@ const copy = {
     mixed: "Partially direct",
     negotiating: "Relay · trying direct",
     relayPath: "Relay",
+    portRules: "Port rules",
+    portRulesHint: "Each rule listens on its own port with its own destination and egress.",
+    rulesUnit: "rules",
+    addRule: "Add rule",
+    portEnd: "End port",
+    portEndPlaceholder: "blank = single port",
+    rangeHint:
+      "Every connection in the range shares this rule's egress; an IPv6 pool allocates a source address per connection.",
+    rangeInvalid:
+      "The end port must exceed the start port and a range may cover at most 1024 ports.",
+    removeRule: "Remove rule",
+    moveUp: "Move rule up",
+    moveDown: "Move rule down",
+    ruleName: "Rule name",
+    rulePlaceholder: "Optional, e.g. MySQL",
+    ruleProtocol: "Listen protocol",
+    ruleProtocolAuto: "Auto-detect",
+    ruleProtocolTcp: "Raw TCP",
+    ruleProtocolHttp: "HTTP proxy",
+    ruleProtocolSocks: "SOCKS proxy",
+    ruleProtocolHelp:
+      "One port answers curl -x http:// or socks5://; auto-detect sniffs the protocol.",
+    invalidRule: "Complete the port, destination and transports of every rule.",
+    ...egressCopy.en,
   },
 };
 type Words = (typeof copy)["en"];
@@ -282,6 +330,7 @@ function Flow({
   );
   const routeLabel =
     transport === "direct" ? w.p2p : transport === "mixed" ? w.mixed : w.relay;
+  const rules = portRulesOf(config);
   return (
     <div
       className={`tunnel-flow ${editor ? "tunnel-flow-editor" : ""}`}
@@ -293,51 +342,16 @@ function Flow({
           {editor ? (
             <>
               {machinePicker("entry")}
-              <div className="tunnel-input-row">
-                <label className="field">
-                  <Tooltip title={w.listenHint}>
-                    <span>{w.listen}</span>
-                  </Tooltip>
-                  <Input
-                    required
-                    value={config.listen_host}
-                    onChange={(e) =>
-                      editor.onChange({ listen_host: e.target.value })
-                    }
-                  />
-                </label>
-                <label className="field">
-                  <span>{w.port}</span>
-                  <InputNumber
-                    aria-label={w.port}
-                    min={1}
-                    max={65535}
-                    value={config.listen_port}
-                    onChange={(v) => editor.onChange({ listen_port: v || 1 })}
-                  />
-                </label>
-              </div>
-              <div className="field tunnel-protocols">
-                <span>{w.protocols}</span>
-                <Checkbox.Group aria-label={w.protocols} options={["tcp", "udp"].map(value => ({ label: value.toUpperCase(), value }))}
-                  value={config.transports || []} onChange={values => editor.onChange({ transports: values as ("tcp" | "udp")[] })} />
-              </div>
-              <div className="tunnel-bind-presets">
-                <Segmented
-                  value={config.listen_host}
-                  items={[
-                    ["127.0.0.1", w.loopback],
-                    ["0.0.0.0", w.public],
-                  ]}
-                  onChange={(listen_host) => editor.onChange({ listen_host })}
-                />
-              </div>
+              <span className="pill">
+                {rules.length} {w.rulesUnit}
+              </span>
             </>
           ) : (
             <>
               <strong>{machine(config.entry_target_id)}</strong>
-              <code>{endpoint(config.listen_host, config.listen_port)}</code>
-              <span>{(config.transports || ("temporary" in config ? ["tcp"] : [])).map(p => p.toUpperCase()).join(" + ")}</span>
+              <span className="pill">
+                {rules.length} {w.rulesUnit}
+              </span>
             </>
           )}
         </div>
@@ -362,47 +376,316 @@ function Flow({
         <div className="tunnel-node destination-node">
           {heading(3, w.destination, <Globe />)}
           {editor ? (
-            <>
-              <label className="field">
-                <Tooltip title={w.destinationHint}>
-                  <span>{w.targetHost}</span>
-                </Tooltip>
-                <Input
-                  required
-                  value={config.destination_host}
-                  onChange={(e) =>
-                    editor.onChange({ destination_host: e.target.value })
-                  }
-                />
-              </label>
-              <label className="field">
-                <span>{w.targetPort}</span>
-                <InputNumber
-                  aria-label={w.targetPort}
-                  min={1}
-                  max={65535}
-                  value={config.destination_port}
-                  onChange={(v) =>
-                    editor.onChange({ destination_port: v || 1 })
-                  }
-                />
-              </label>
-            </>
+            <span className="tunnel-help">{w.portRulesHint}</span>
           ) : (
             <>
               <strong>
-                {endpoint(
-                  config.destination_host || "…",
-                  config.destination_port,
-                )}
+                {rules.length === 1
+                  ? endpoint(rules[0].destination_host, rules[0].destination_port)
+                  : `${rules.length} ${w.rulesUnit}`}
               </strong>
             </>
           )}
         </div>
       </div>
+      {!editor && (
+        <div className="port-rule-list">
+          {rules.map((rule) => (
+            <div className="port-rule-row" key={rule.id}>
+              <code>{rule.listen_host || "0.0.0.0"}:{portRangeLabel(rule)}</code>
+              <ArrowRight size={14} aria-hidden="true" />
+              <span className="port-rule-tags">
+                <Tag>
+                  {(rule.transports?.length ? rule.transports : ["tcp"])
+                    .map((p) => p.toUpperCase())
+                    .join(" + ")}
+                </Tag>
+                {rule.protocol && rule.protocol !== "auto" && (
+                  <Tag color="geekblue">{protocolLabel(rule.protocol, w)}</Tag>
+                )}
+              </span>
+              <code>{endpoint(rule.destination_host, rule.destination_port)}</code>
+              <span className="pill">{egressSummary(rule.egress, w)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
+
+// protocolLabel names an explicitly configured listen protocol.
+function protocolLabel(protocol: PortRule["protocol"], w: Words): string {
+  if (protocol === "tcp") return w.ruleProtocolTcp;
+  if (protocol === "http") return w.ruleProtocolHttp;
+  if (protocol === "socks") return w.ruleProtocolSocks;
+  return w.ruleProtocolAuto;
+}
+
+// savePortRules omits an auto protocol so an old configuration keeps exactly
+// the bytes it had: absent means auto on the server as well.
+function savePortRules(rules: PortRule[]): PortRule[] {
+  return rules.map((rule) => {
+    if (rule.protocol && rule.protocol !== "auto") return rule;
+    const next = { ...rule };
+    delete next.protocol;
+    return next;
+  });
+}
+
+// portRangeLabel renders 8080 or 10000-11000 for a rule.
+function portRangeLabel(rule: PortRule): string {
+  const end = rule.listen_port_end ?? 0;
+  return end > rule.listen_port ? `${rule.listen_port}-${end}` : String(rule.listen_port);
+}
+
+// portRangeProblem rejects an inverted or oversized range before saving.
+function portRangeProblem(rule: PortRule): boolean {
+  const end = rule.listen_port_end ?? 0;
+  if (!end) return false;
+  return end <= rule.listen_port || end - rule.listen_port + 1 > 1024;
+}
+
+function ruleID() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `rule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function newPortRule(): PortRule {
+  return {
+    id: ruleID(),
+    listen_host: "0.0.0.0",
+    listen_port: 8080,
+    transports: ["tcp"],
+    destination_host: "127.0.0.1",
+    destination_port: 80,
+  };
+}
+
+function portRulesOf(config: TunnelConfig): PortRule[] {
+  if (config.port_rules?.length) return config.port_rules;
+  return [
+    {
+      id: "legacy",
+      listen_host: config.listen_host || "0.0.0.0",
+      listen_port: config.listen_port,
+      transports: config.transports?.length ? config.transports : ["tcp"],
+      destination_host: config.destination_host,
+      destination_port: config.destination_port,
+    },
+  ];
+}
+
+function hydratePortRules(config: TunnelConfig): PortRule[] {
+  return portRulesOf(config).map((rule) => ({
+    id: rule.id || ruleID(),
+    name: rule.name,
+    listen_host: rule.listen_host || "0.0.0.0",
+    listen_port: rule.listen_port || 8080,
+    listen_port_end: rule.listen_port_end,
+    transports: rule.transports?.length ? rule.transports : ["tcp"],
+    protocol: rule.protocol && rule.protocol !== "auto" ? rule.protocol : undefined,
+    destination_host: rule.destination_host || "127.0.0.1",
+    destination_port: rule.destination_port || 80,
+    egress: rule.egress,
+  }));
+}
+
+function PortRulesEditor({
+  config,
+  words: w,
+  onChange,
+}: {
+  config: TunnelConfig;
+  words: Words;
+  onChange: (patch: Partial<TunnelConfig>) => void;
+}) {
+  const rules = config.port_rules ?? [];
+  const apply = (next: PortRule[]) => {
+    const transports = Array.from(
+      new Set(next.flatMap((rule) => rule.transports ?? [])),
+    ) as ("tcp" | "udp")[];
+    const first = next[0];
+    onChange({
+      port_rules: next,
+      transports: transports.length ? transports : ["tcp"],
+      listen_host: first?.listen_host || "0.0.0.0",
+      listen_port: first?.listen_port || 8080,
+    });
+  };
+  const update = (index: number, patch: Partial<PortRule>) =>
+    apply(rules.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)));
+  const move = (index: number, delta: number) => {
+    const target = index + delta;
+    if (target < 0 || target >= rules.length) return;
+    const next = [...rules];
+    [next[index], next[target]] = [next[target], next[index]];
+    apply(next);
+  };
+  return (
+    <div className="port-rules-editor">
+      <div className="port-rules-head">
+        <strong>{w.portRules}</strong>
+        <span className="pill">
+          {rules.length} {w.rulesUnit}
+        </span>
+      </div>
+      <span className="tunnel-help">{w.rangeHint}</span>
+      <span className="tunnel-help">{w.ruleProtocolHelp}</span>
+      {rules.map((rule, index) => (
+        <Card
+          key={rule.id}
+          size="small"
+          className="port-rule-card"
+          title={
+            <>
+              <Tag color="blue">#{index + 1}</Tag>
+              {rule.name ||
+                `${rule.listen_host || "0.0.0.0"}:${portRangeLabel(rule)}`}
+            </>
+          }
+          extra={
+            <div className="port-rule-actions">
+              <Button
+                size="small"
+                aria-label={w.moveUp}
+                disabled={index === 0}
+                onClick={() => move(index, -1)}
+              >
+                ↑
+              </Button>
+              <Button
+                size="small"
+                aria-label={w.moveDown}
+                disabled={index === rules.length - 1}
+                onClick={() => move(index, 1)}
+              >
+                ↓
+              </Button>
+              <Button
+                danger
+                type="text"
+                aria-label={w.removeRule}
+                icon={<Trash2 size={14} />}
+                disabled={rules.length === 1}
+                onClick={() => apply(rules.filter((_, i) => i !== index))}
+              />
+            </div>
+          }
+        >
+          <div className="port-rule-grid">
+            <label className="field">
+              <span>{w.listen}</span>
+              <Input
+                aria-label={w.listen}
+                value={rule.listen_host || ""}
+                placeholder="0.0.0.0"
+                onChange={(e) => update(index, { listen_host: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              <span>{w.port}</span>
+              <InputNumber
+                aria-label={w.port}
+                min={1}
+                max={65535}
+                value={rule.listen_port || null}
+                onChange={(v) => update(index, { listen_port: Number(v) || 0 })}
+              />
+            </label>
+            <label className="field">
+              <span>{w.portEnd}</span>
+              <InputNumber
+                aria-label={w.portEnd}
+                min={1}
+                max={65535}
+                value={rule.listen_port_end || null}
+                placeholder={w.portEndPlaceholder}
+                onChange={(v) =>
+                  update(index, {
+                    listen_port_end:
+                      v && Number(v) > rule.listen_port ? Number(v) : undefined,
+                  })
+                }
+              />
+            </label>
+            <div className="field">
+              <span>{w.protocols}</span>
+              <Checkbox.Group
+                aria-label={w.protocols}
+                options={["tcp", "udp"].map((value) => ({ label: value.toUpperCase(), value }))}
+                value={rule.transports}
+                onChange={(values) => update(index, { transports: values as ("tcp" | "udp")[] })}
+              />
+            </div>
+            <label className="field">
+              <span>{w.ruleProtocol}</span>
+              <Select
+                aria-label={w.ruleProtocol}
+                value={rule.protocol ?? "auto"}
+                options={[
+                  { value: "auto", label: w.ruleProtocolAuto },
+                  { value: "tcp", label: w.ruleProtocolTcp },
+                  { value: "http", label: w.ruleProtocolHttp },
+                  { value: "socks", label: w.ruleProtocolSocks },
+                ]}
+                onChange={(value) =>
+                  update(index, {
+                    protocol: value === "auto" ? undefined : value,
+                  })
+                }
+              />
+            </label>
+            <label className="field">
+              <span>{w.targetHost}</span>
+              <Input
+                aria-label={w.targetHost}
+                value={rule.destination_host}
+                onChange={(e) => update(index, { destination_host: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              <span>{w.targetPort}</span>
+              <InputNumber
+                aria-label={w.targetPort}
+                min={1}
+                max={65535}
+                value={rule.destination_port || null}
+                onChange={(v) => update(index, { destination_port: Number(v) || 1 })}
+              />
+            </label>
+          </div>
+          <label className="field">
+            <span>{w.ruleName}</span>
+            <Input
+              maxLength={128}
+              value={rule.name || ""}
+              placeholder={w.rulePlaceholder}
+              onChange={(e) => update(index, { name: e.target.value })}
+            />
+          </label>
+          <EgressEditor
+            value={rule.egress}
+            exitTargetID={config.exit_target_id}
+            onChange={(egress) => update(index, { egress })}
+          />
+        </Card>
+      ))}
+      <Button
+        type="dashed"
+        block
+        icon={<Plus size={15} />}
+        disabled={rules.length >= 64}
+        onClick={() => apply([...rules, newPortRule()])}
+      >
+        {w.addRule}
+      </Button>
+    </div>
+  );
+}
+
 function FlowArrow({ label }: { label?: string }) {
   return (
     <div className="tunnel-flow-arrow">
@@ -796,42 +1079,95 @@ function TunnelEditor({
   const firstMachine = data.user.is_system_admin
     ? ""
     : data.targets[0]?.id || "__select__";
-  const [config, setConfig] = useState<TunnelConfig>(
-    tunnel
-      ? {
-          protocol: tunnel.protocol,
-          transports: tunnel.transports,
-          http: tunnel.http,
-          name: tunnel.name,
-          entry_target_id: tunnel.entry_target_id,
-          listen_host: tunnel.listen_host,
-          listen_port: tunnel.listen_port,
-          exit_target_id: tunnel.exit_target_id,
-          destination_host: tunnel.destination_host,
-          destination_port: tunnel.destination_port,
-          duration_seconds: tunnel.duration_seconds,
-        }
-      : {
-          ...blank,
-          protocol: initialProtocol,
-          transports: ["tcp"],
-          http: initialProtocol === "http" ? newHTTPConfig(firstMachine) : undefined,
-          entry_target_id: firstMachine,
-          exit_target_id: firstMachine,
-        },
-  );
+  const [config, setConfig] = useState<TunnelConfig>(() => {
+    if (!tunnel) {
+      const rule = newPortRule();
+      return {
+        ...blank,
+        protocol: initialProtocol,
+        transports: rule.transports,
+        port_rules: [rule],
+        listen_host: rule.listen_host || "0.0.0.0",
+        listen_port: rule.listen_port,
+        destination_host: rule.destination_host,
+        destination_port: rule.destination_port,
+        http: initialProtocol === "http" ? newHTTPConfig(firstMachine) : undefined,
+        entry_target_id: firstMachine,
+        exit_target_id: firstMachine,
+      };
+    }
+    const rules = hydratePortRules(tunnel);
+    return {
+      protocol: tunnel.protocol,
+      transports: tunnel.transports,
+      http: tunnel.http,
+      port_rules: rules,
+      name: tunnel.name,
+      entry_target_id: tunnel.entry_target_id,
+      listen_host: rules[0]?.listen_host || tunnel.listen_host,
+      listen_port: rules[0]?.listen_port || tunnel.listen_port,
+      exit_target_id: tunnel.exit_target_id,
+      destination_host: rules[0]?.destination_host || tunnel.destination_host,
+      destination_port: rules[0]?.destination_port || tunnel.destination_port,
+      duration_seconds: tunnel.duration_seconds,
+    };
+  });
   const [savedID, setSavedID] = useState<string | null>(null);
   const [enable, setEnable] = useState(!tunnel);
   const [timed, setTimed] = useState(config.duration_seconds > 0);
   const set = <K extends keyof TunnelConfig>(key: K, value: TunnelConfig[K]) =>
     setConfig((c) => ({ ...c, [key]: value }));
-  const invalidProtocols = config.protocol === "port" && !config.transports?.length;
-  const udpSSH = config.protocol === "port" && config.transports?.includes("udp") &&
+  const rules = config.port_rules ?? [];
+  const ruleTransports = Array.from(
+    new Set(rules.flatMap((rule) => rule.transports ?? [])),
+  ) as ("tcp" | "udp")[];
+  const invalidProtocols = config.protocol === "port" && ruleTransports.length === 0;
+  const invalidRules =
+    config.protocol === "port" &&
+    (rules.length === 0 ||
+      rules.some(
+        (rule) =>
+          !rule.listen_port ||
+          rule.listen_port < 1 ||
+          rule.listen_port > 65535 ||
+          !(rule.destination_host || "").trim() ||
+          !rule.destination_port ||
+          !(rule.transports ?? []).length,
+      ));
+  const rangeIssue =
+    config.protocol === "port" && rules.some((rule) => portRangeProblem(rule))
+      ? w.rangeInvalid
+      : null;
+  const egressIssue =
+    config.protocol === "port"
+      ? rules.map((rule) => egressProblem(rule.egress, w)).find(Boolean) || null
+      : config.http?.servers
+          .flatMap((server) => server.locations)
+          .map((location) => egressProblem(location.egress, w))
+          .find(Boolean) || null;
+  const udpSSH = config.protocol === "port" && ruleTransports.includes("udp") &&
     [config.entry_target_id, config.exit_target_id].some(id => id && data.targets.find(t => t.id === id)?.target_type === "direct");
   const mutation = useMutation({
     mutationFn: async () => {
-      if (invalidProtocols || udpSSH) throw new Error(udpSSH ? w.udpSSH : w.selectProtocol);
-      const body = {...config, transports: config.protocol === "port" ? config.transports : undefined, http: config.protocol === "http" ? config.http : undefined};
+      if (invalidProtocols) throw new Error(w.selectProtocol);
+      if (invalidRules) throw new Error(w.invalidRule);
+      if (rangeIssue) throw new Error(rangeIssue);
+      if (egressIssue) throw new Error(egressIssue);
+      if (udpSSH) throw new Error(w.udpSSH);
+      const first = rules[0];
+      const body: TunnelConfig =
+        config.protocol === "port"
+          ? {
+              ...config,
+              transports: ruleTransports,
+              port_rules: savePortRules(rules),
+              listen_host: first?.listen_host || "0.0.0.0",
+              listen_port: first?.listen_port || 8080,
+              destination_host: first?.destination_host || "127.0.0.1",
+              destination_port: first?.destination_port || 80,
+              http: undefined,
+            }
+          : { ...config, transports: undefined, port_rules: undefined };
       const result =
         tunnel || savedID
           ? await api.updateTunnel(tunnel?.id || savedID!, body)
@@ -878,7 +1214,7 @@ function TunnelEditor({
           <Network size={17} />
           <strong>{w.flow}</strong>
         </div>
-        {config.protocol === "http" ? <HTTPForwardEditor data={data} config={config} onChange={patch=>setConfig(c=>({...c,...patch}))}/> : <Flow
+        {config.protocol === "http" ? <HTTPForwardEditor data={data} config={config} onChange={patch=>setConfig(c=>({...c,...patch}))}/> : <><Flow
           config={config}
           targets={data.targets}
           words={w}
@@ -886,7 +1222,12 @@ function TunnelEditor({
             data,
             onChange: (patch) => setConfig((c) => ({ ...c, ...patch })),
           }}
-        />}
+        />
+        <PortRulesEditor
+          config={config}
+          words={w}
+          onChange={(patch) => setConfig((c) => ({ ...c, ...patch }))}
+        /></>}
         <div className="tunnel-duration">
           <div className="field">
             <span>
@@ -932,7 +1273,13 @@ function TunnelEditor({
             <span>{w.enableOnSave}</span>
           </label>
         )}
-        {(invalidProtocols || udpSSH) && <p role="alert" className="tunnel-edit-warning">{udpSSH ? w.udpSSH : w.selectProtocol}</p>}
+        {config.protocol === "port" && (invalidProtocols || invalidRules || rangeIssue) && (
+          <p role="alert" className="tunnel-edit-warning">
+            {rangeIssue || (invalidRules ? w.invalidRule : w.selectProtocol)}
+          </p>
+        )}
+        {egressIssue && <p role="alert" className="tunnel-edit-warning">{egressIssue}</p>}
+        {udpSSH && <p role="alert" className="tunnel-edit-warning">{w.udpSSH}</p>}
         <ErrorMessage error={mutation.error} />
         <div className="form-actions">
           <Button onClick={onClose} disabled={mutation.isPending}>
@@ -943,7 +1290,7 @@ function TunnelEditor({
             htmlType="submit"
             loading={mutation.isPending}
             disabled={
-              invalidProtocols || udpSSH || config.entry_target_id === "__select__" ||
+              invalidProtocols || invalidRules || Boolean(rangeIssue) || Boolean(egressIssue) || udpSSH || config.entry_target_id === "__select__" ||
               (config.protocol === "http" ? config.http?.servers.some(s=>s.locations.some(l=>l.exit_target_id === "__select__")) : config.exit_target_id === "__select__")
             }
           >
