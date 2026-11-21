@@ -132,6 +132,9 @@ func (c *Client) Run(ctx context.Context) error {
 			if backoff < 30*time.Second {
 				backoff *= 2
 			}
+			// The previous session carried the edge links; they are dead now, so
+			// drop them and let the server bridge fresh ones on the next sync.
+			c.resetPeers()
 			log.Printf("agent reconnecting after error: %v", err)
 			continue
 		}

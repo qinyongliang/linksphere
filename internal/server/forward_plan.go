@@ -163,7 +163,9 @@ func (m *edgeForwardManager) planRoute(p *forwardPlan, exitTargetID string, rout
 		spec = forwardLinkSpec{peer: protocol.ForwardPeer{LinkID: linkID, ConfigID: p.deployment.ID, Revision: p.deployment.Revision, ExpiresAt: p.deployment.ExpiresAt}, exitAgent: exit, targetID: exitTargetID}
 	}
 	route.LinkID = linkID
-	exitRoute := protocol.ForwardRoute{ID: route.ID, Network: route.Network, Address: route.Address, Egress: route.Egress}
+	// The exit must know the grant is dynamic: a proxy listener's client picks the
+	// destination, and without this flag the exit rejects every client target.
+	exitRoute := protocol.ForwardRoute{ID: route.ID, Network: route.Network, Address: route.Address, Egress: route.Egress, Dynamic: route.Dynamic}
 	if exit != "" {
 		if exitRoute.Hops, err = m.app.forwardHops(m.ctx, exitTargetID); err != nil {
 			return err

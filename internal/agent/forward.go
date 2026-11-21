@@ -111,6 +111,29 @@ func (c *Client) egressPools() *egress.Pools {
 	return c.egressRegistry
 }
 
+// resetPeers drops edge links created over a previous Agent session. The server
+// rebuilds them as soon as the next sync reports each link as missing; keeping
+// the stale peers would make the Agent claim a healthy path that no longer
+// exists, so the server would never re-establish it.
+func (c *Client) resetPeers() {
+	c.forwardMu.Lock()
+	m := c.edge
+	c.forwardMu.Unlock()
+	if m != nil {
+		m.resetPeers()
+	}
+}
+
+func (m *edgeForwarder) resetPeers() {
+	m.peers.Range(func(key, value any) bool {
+		if p, ok := value.(*forward.Peer); ok {
+			p.Close()
+		}
+		m.peers.Delete(key)
+		return true
+	})
+}
+
 func (c *Client) closeForwarder() {
 	c.forwardMu.Lock()
 	m := c.edge
@@ -267,11 +290,20 @@ func (m *edgeForwarder) apply(d protocol.ForwardDeployment) {
 		if fn := localTarget[id]; fn != nil {
 			return fn(c, target)
 		}
-		p := m.peer(links[id])
+		linkID := links[id]
+		p := m.peer(linkID)
 		if p == nil || !p.Alive() {
 			return nil, errors.New("edge exit channel unavailable")
 		}
-		return p.DialTarget(c, id, target)
+		conn, err := p.DialTarget(c, id, target)
+		if err != nil {
+			// A half-open link (the exit restarted, or the relay bridge is gone)
+			// cannot be repaired locally: drop it so the next sync reports it as
+			// missing and the server bridges a fresh one.
+			p.Close()
+			m.peers.CompareAndDelete(linkID, p)
+		}
+		return conn, err
 	}
 	dial := func(c context.Context, id string) (net.Conn, error) { return dialTarget(c, id, "") }
 	direct := func(id string) bool {
