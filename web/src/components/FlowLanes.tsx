@@ -102,6 +102,7 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
         return (
           <div className="lane-row" key={rule.id}>
             <div className="lane-port">
+              <span className="lane-port-label">{w.listenLabel}</span>
               <Input
                 className="lane-host"
                 value={rule.listen_host || ""}
@@ -171,8 +172,8 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
                 <Segmented
                   value={single ? "single" : "proxy"}
                   items={[
-                    ["single", w.laneSingle],
-                    ["proxy", w.laneProxy],
+                    ["single", w.laneFixed],
+                    ["proxy", w.laneClient],
                   ]}
                   onChange={(value) =>
                     update(index, {
@@ -185,9 +186,6 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
                     })
                   }
                 />
-                <Tooltip title={w.laneModeTip}>
-                  <HelpCircle size={13} className="lane-tip" aria-label={w.laneModeTip} />
-                </Tooltip>
                 {!single && (
                   <Select
                     className="lane-protocol"
@@ -204,8 +202,12 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
                   />
                 )}
               </div>
+              <p className="lane-card-hint">
+                {single ? w.laneFixedHint : w.laneClientHint}
+              </p>
               {single ? (
                 <div className="lane-target">
+                  <span className="lane-target-label">{w.targetLabel}</span>
                   <Input
                     value={rule.destination_host}
                     aria-label={w.targetHost}

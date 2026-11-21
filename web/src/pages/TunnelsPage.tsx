@@ -155,6 +155,12 @@ const copy = {
     laneMode: "连接方式",
     laneSingle: "单一服务",
     laneProxy: "代理出口",
+    laneFixed: "固定目标",
+    laneClient: "客户端自选",
+    laneFixedHint: "客户端连到这个端口，就转发到下面这个地址。",
+    laneClientHint: "客户端自己说要去哪：按 SOCKS5 / HTTP 代理处理，可指定从哪条线路出去。",
+    targetLabel: "转发到",
+    listenLabel: "监听",
     modeSingleHelp:
       "客户端连到监听端口后，固定转发到下面的目标地址；不解析代理协议。",
     modeProxyHelp:
@@ -289,6 +295,12 @@ const copy = {
     laneMode: "Connection",
     laneSingle: "Fixed service",
     laneProxy: "Proxy egress",
+    laneFixed: "Fixed target",
+    laneClient: "Client chooses",
+    laneFixedHint: "Whatever connects to this port is forwarded to the address below.",
+    laneClientHint: "The client says where to go: handled as SOCKS5 / HTTP, with an optional egress route.",
+    targetLabel: "Forward to",
+    listenLabel: "Listen",
     modeSingleHelp:
       "Whatever connects to the port is forwarded to the destination below; proxy protocols are not used.",
     modeProxyHelp:
