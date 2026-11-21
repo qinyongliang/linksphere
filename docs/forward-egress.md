@@ -54,15 +54,15 @@ and egress, so a pool still allocates one source address per connection.
       "protocol": "port",
       "port_rules": [
         {"id": "web", "listen_host": "0.0.0.0", "listen_port": 8888,
-         "transports": ["tcp"], "destination_host": "10.0.0.7", "destination_port": 80,
+         "transports": ["tcp"], "destination_host": "192.0.2.10", "destination_port": 80,
          "egress": {"family": "both"}},
         {"id": "rot", "listen_host": "0.0.0.0", "listen_port": 9999,
-         "transports": ["tcp"], "destination_host": "10.0.0.7", "destination_port": 443,
+         "transports": ["tcp"], "destination_host": "192.0.2.10", "destination_port": 443,
          "egress": {"family": "ipv6", "ipv6_mode": "pool",
                     "pool_start": "2001:db8:100::100", "pool_size": 64,
                     "pool_mode": "rotate"}},
         {"id": "seq", "listen_host": "0.0.0.0", "listen_port": 10000,
-         "transports": ["tcp"], "destination_host": "10.0.0.7", "destination_port": 443,
+         "transports": ["tcp"], "destination_host": "192.0.2.10", "destination_port": 443,
          "egress": {"family": "ipv6", "ipv6_mode": "pool",
                     "pool_start": "2001:db8:100::100", "pool_size": 64,
                     "pool_mode": "sticky"}}
@@ -74,7 +74,7 @@ the server projects them onto one rule with the reserved id "port".
 
 HTTP forwarding applies egress per location:
 
-    {"id": "loc", "path": "/api", "scheme": "http", "host": "10.0.0.7", "port": 8080,
+    {"id": "loc", "path": "/api", "scheme": "http", "host": "192.0.2.10", "port": 8080,
      "exit_target_id": "target-id", "egress": {"interface": "eth1", "family": "ipv4"}}
 
 ## Runtime placement
