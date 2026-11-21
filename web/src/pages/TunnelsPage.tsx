@@ -158,7 +158,7 @@ const copy = {
     laneFixed: "固定目标",
     laneClient: "客户端自选",
     laneFixedHint: "客户端连到这个端口，就转发到下面这个地址。",
-    laneClientHint: "客户端自己说要去哪：按 SOCKS5 / HTTP 代理处理，可指定从哪条线路出去。",
+    laneClientHint: "客户端自己说要去哪：SOCKS5 / HTTP 自动识别，不需要其它配置。",
     targetLabel: "转发到",
     listenLabel: "监听",
     modeSingleHelp:
@@ -298,7 +298,7 @@ const copy = {
     laneFixed: "Fixed target",
     laneClient: "Client chooses",
     laneFixedHint: "Whatever connects to this port is forwarded to the address below.",
-    laneClientHint: "The client says where to go: handled as SOCKS5 / HTTP, with an optional egress route.",
+    laneClientHint: "The client says where to go; SOCKS5 and HTTP are detected automatically. Nothing else to configure.",
     targetLabel: "Forward to",
     listenLabel: "Listen",
     modeSingleHelp:

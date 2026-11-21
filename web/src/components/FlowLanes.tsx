@@ -1,8 +1,7 @@
-import { Button, Card, Checkbox, Input, InputNumber, Select, Tooltip } from "antd";
-import { HelpCircle } from "lucide-react";
+import { Button, Card, Checkbox, Input, InputNumber, Tooltip } from "antd";
 import { ArrowRight, Plus, Trash2 } from "lucide-react";
+import { useState } from "react";
 import type { ConsoleData, PortRule, Target, TunnelConfig } from "../types";
-import { EgressEditor } from "./EgressEditor";
 import { MachinePicker } from "./MachinePicker";
 import { Segmented } from "./ui";
 import "./flow-lanes.css";
@@ -17,12 +16,20 @@ export interface FlowLanesProps {
   onChange: (patch: Partial<TunnelConfig>) => void;
 }
 
+function ruleID(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `rule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function newRule(port: number): PortRule {
   return {
-    id: `rule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    id: ruleID(),
     listen_host: "0.0.0.0",
     listen_port: port,
     transports: ["tcp"],
+    // A fixed target defaults to this machine, the usual reason to forward.
     destination_host: "127.0.0.1",
     destination_port: 80,
     protocol: "tcp",
@@ -33,15 +40,34 @@ function isRange(rule: PortRule): boolean {
   return Boolean(rule.listen_port_end && rule.listen_port_end > rule.listen_port);
 }
 
+/** portText renders one field as 8080 or 8080-8099. */
+function portText(rule: PortRule): string {
+  return isRange(rule) ? `${rule.listen_port}-${rule.listen_port_end}` : String(rule.listen_port || "");
+}
+
+/** parsePortText accepts 8080 or 8080-8099 and rejects anything else. */
+function parsePortText(text: string): { port: number; end?: number } | null {
+  const match = text.trim().match(/^(\d{1,5})(?:\s*-\s*(\d{1,5}))?$/);
+  if (!match) return null;
+  const port = Number(match[1]);
+  if (port < 1 || port > 65535) return null;
+  if (!match[2]) return { port };
+  const end = Number(match[2]);
+  if (end <= port || end > 65535 || end - port + 1 > 1024) return null;
+  return { port, end };
+}
+
 /**
  * FlowLanes edits a port forward as the path a connection takes: ports live in
  * the entry card, and every port has its own line to a block in the exit card
- * where it is either sent to one fixed service or handled as a proxy egress.
- * Rows stay aligned, so one port's entry and exit read as a single line.
+ * where it is either forwarded to one service or handed to the client as a
+ * proxy. Rows stay aligned so one port's entry and exit read as a single line.
  */
 export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLanesProps) {
   const rules = config.port_rules?.length ? config.port_rules : [newRule(8080)];
   const base = rules[0];
+  // Ports are edited as text so a half-typed range does not jump around.
+  const [portDraft, setPortDraft] = useState<Record<string, string>>({});
 
   const write = (next: PortRule[]) => {
     const transports = Array.from(
@@ -99,6 +125,7 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
 
       {rules.map((rule, index) => {
         const single = (rule.protocol ?? "auto") === "tcp";
+        const text = portDraft[rule.id] ?? portText(rule);
         return (
           <div className="lane-row" key={rule.id}>
             <div className="lane-port">
@@ -110,48 +137,32 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
                 aria-label={w.listen}
                 onChange={(e) => update(index, { listen_host: e.target.value })}
               />
-              <InputNumber
-                className="lane-port-number"
-                min={1}
-                max={65535}
-                value={rule.listen_port || null}
-                aria-label={w.port}
-                onChange={(v) => update(index, { listen_port: Number(v) || 0 })}
-              />
               <Tooltip title={w.portFormTip}>
-                <HelpCircle size={13} className="lane-tip" aria-label={w.portFormTip} />
-              </Tooltip>
-              <Select
-                className="lane-form"
-                value={isRange(rule) ? "range" : "single"}
-                options={[
-                  { value: "single", label: w.portFormSingle },
-                  { value: "range", label: w.portFormRange },
-                ]}
-                onChange={(value) =>
-                  update(index, {
-                    listen_port_end:
-                      value === "range"
-                        ? Math.min(65535, (rule.listen_port || 8080) + 9)
-                        : undefined,
-                  })
-                }
-              />
-              {isRange(rule) && (
-                <InputNumber
-                  className="lane-port-number"
-                  min={1}
-                  max={65535}
-                  value={rule.listen_port_end || null}
-                  aria-label={w.portEnd}
-                  onChange={(v) =>
-                    update(index, {
-                      listen_port_end:
-                        v && Number(v) > rule.listen_port ? Number(v) : undefined,
+                <Input
+                  className="lane-port-range"
+                  value={text}
+                  placeholder="8080 或 8080-8099"
+                  aria-label={w.port}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    setPortDraft((d) => ({ ...d, [rule.id]: raw }));
+                    const parsed = parsePortText(raw);
+                    if (parsed) {
+                      update(index, {
+                        listen_port: parsed.port,
+                        listen_port_end: parsed.end,
+                      });
+                    }
+                  }}
+                  onBlur={() =>
+                    setPortDraft((d) => {
+                      const next = { ...d };
+                      delete next[rule.id];
+                      return next;
                     })
                   }
                 />
-              )}
+              </Tooltip>
               {rules.length > 1 && (
                 <Button
                   type="text"
@@ -181,40 +192,25 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
                         value === "single"
                           ? "tcp"
                           : rule.protocol === "tcp"
-                            ? "auto"
+                            ? undefined
                             : rule.protocol,
                     })
                   }
                 />
-                {!single && (
-                  <Select
-                    className="lane-protocol"
-                    value={rule.protocol ?? "auto"}
-                    aria-label={w.ruleProtocol}
-                    options={[
-                      { value: "auto", label: w.ruleProtocolAuto },
-                      { value: "http", label: w.ruleProtocolHttp },
-                      { value: "socks", label: w.ruleProtocolSocks },
-                    ]}
-                    onChange={(value) =>
-                      update(index, { protocol: value === "auto" ? undefined : value })
-                    }
-                  />
-                )}
               </div>
-              <p className="lane-card-hint">
-                {single ? w.laneFixedHint : w.laneClientHint}
-              </p>
               {single ? (
                 <div className="lane-target">
                   <span className="lane-target-label">{w.targetLabel}</span>
                   <Input
-                    value={rule.destination_host}
+                    className="lane-target-host"
+                    value={rule.destination_host || "127.0.0.1"}
+                    placeholder="127.0.0.1"
                     aria-label={w.targetHost}
-                    placeholder={w.targetHost}
                     onChange={(e) => update(index, { destination_host: e.target.value })}
                   />
+                  <span className="lane-target-colon">:</span>
                   <InputNumber
+                    className="lane-target-port"
                     min={1}
                     max={65535}
                     value={rule.destination_port || null}
@@ -223,11 +219,7 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
                   />
                 </div>
               ) : (
-                <EgressEditor
-                  value={rule.egress}
-                  exitTargetID={config.exit_target_id}
-                  onChange={(egress) => update(index, { egress })}
-                />
+                <p className="lane-card-hint">{w.laneClientHint}</p>
               )}
             </Card>
           </div>
@@ -245,6 +237,9 @@ export function FlowLanes({ data, config, targets, words: w, onChange }: FlowLan
               {
                 ...newRule(Math.min(65535, (base.listen_port || 8080) + 1)),
                 transports: base.transports,
+                protocol: base.protocol,
+                destination_host: base.destination_host || "127.0.0.1",
+                destination_port: base.destination_port || 80,
               },
             ])
           }
