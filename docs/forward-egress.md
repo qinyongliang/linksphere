@@ -91,8 +91,10 @@ socket, so advanced egress is rejected at save time. Keep the default egress for
 those, or use SSH dynamic forwarding on that machine.
 
 Pool allocation is process-local and keyed by (machine, pool_start, pool_mode). The
-allocated addresses are not assigned to a device: the exit Agent binds them with
-IPV6_FREEBIND, which is why the delegated prefix must be routed to the machine.
+exit Agent assigns each allocated address to a dedicated dummy device (lsv6pool)
+so replies are delivered to the machine, then binds it as the source address.
+Without root it falls back to IPV6_FREEBIND, which can send but cannot receive, so
+a delegated prefix routed to the machine and a root Agent are the supported setup.
 
 ## Console and MCP
 
@@ -117,8 +119,9 @@ IPV6_FREEBIND, which is why the delegated prefix must be routed to the machine.
   the status line folds them back into "host:10000-11000".
 * Interface binding and IPv6 pools require a Linux exit (SO_BINDTODEVICE and
   IPV6_FREEBIND). Other platforms accept the default host egress only.
-* Pool addresses are bound, not configured: the delegated prefix must already be
-  routed to the exit machine. The Agent never adds addresses or routes.
+* Pool addresses are assigned to the lsv6pool dummy device on the exit machine;
+  the Agent never adds routes and never touches other interfaces. Removing the
+  dummy device releases every allocated address.
 * The sticky allocation cursor is per process; an Agent restart restarts the
   sequence at the pool base.
 * Proxy egress is TCP-only and carries no UDP forwarding.
