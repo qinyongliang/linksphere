@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"strconv"
 	"sync"
@@ -518,6 +519,9 @@ func (m *tunnelManager) forward(r *tunnelRun, source net.Conn) {
 	defer r.untrack(source)
 	destination, err := r.dial(r.ctx)
 	if err != nil {
+		// The client is closed without a greeting, so without this line the
+		// reason (unreachable destination, offline exit) is invisible.
+		log.Printf("[tunnel] %s: dial failed: %v", r.config.Name, err)
 		r.mu.Lock()
 		r.state.Error = err.Error()
 		r.state.ErrorDiagnostic = nil
