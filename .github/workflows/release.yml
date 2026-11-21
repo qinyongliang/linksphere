@@ -165,25 +165,14 @@ jobs:
           # Small device-bound forwarder for hosts that cannot run the Agent
           # (32-bit routers, for example). It is what keeps a multi-WAN exit
           # free of hand-written policy routing.
-          egress_platforms=(
-            "linux amd64 - linux-amd64"
-            "linux arm64 - linux-arm64"
-            "linux mipsle softfloat linux-mipsle"
-            "linux mips softfloat linux-mips"
-            "linux arm 7 linux-armv7"
-            "linux 386 - linux-386"
-          )
-
-          for item in "${egress_platforms[@]}"; do
-            read -r goos goarch gomips platform <<< "$item"
-            echo "building egress helper $platform"
-            if [ "$gomips" != "-" ]; then
-              env CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" GOMIPS="$gomips" \
-                go build -trimpath -ldflags="-s -w -X main.version=$version" -o "dist/gosshd-egress-$version-$platform" ./cmd/gosshd-egress
-            else
-              build_go "$goos" "$goarch" "-" "dist/gosshd-egress-$version-$platform" "-X main.version=$version" ./cmd/gosshd-egress
-            fi
-          done
+          build_go linux amd64 - "dist/gosshd-egress-$version-linux-amd64" "-X main.version=$version" ./cmd/gosshd-egress
+          build_go linux arm64 - "dist/gosshd-egress-$version-linux-arm64" "-X main.version=$version" ./cmd/gosshd-egress
+          build_go linux 386 - "dist/gosshd-egress-$version-linux-386" "-X main.version=$version" ./cmd/gosshd-egress
+          build_go linux arm 7 "dist/gosshd-egress-$version-linux-armv7" "-X main.version=$version" ./cmd/gosshd-egress
+          env CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat \
+            go build -trimpath -ldflags="-s -w -X main.version=$version" -o "dist/gosshd-egress-$version-linux-mipsle" ./cmd/gosshd-egress
+          env CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat \
+            go build -trimpath -ldflags="-s -w -X main.version=$version" -o "dist/gosshd-egress-$version-linux-mips" ./cmd/gosshd-egress
 
           for item in "${server_platforms[@]}"; do
             read -r goos _ _ platform _ <<< "$item"
