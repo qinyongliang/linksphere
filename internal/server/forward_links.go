@@ -8,6 +8,7 @@ import (
 	"github.com/qinyongliang/linksphere/internal/forward"
 	"github.com/qinyongliang/linksphere/internal/protocol"
 	"io"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,7 @@ func (m *edgeForwardManager) openPeerStream(agent string, kind string, peer prot
 func (m *edgeForwardManager) serveLink(entry string, spec forwardLinkSpec) {
 	in, reader, err := m.openPeerStream(entry, protocol.StreamForwardLink, spec.peer)
 	if err != nil {
+		log.Printf("[forward] link %s: entry %s did not accept the link: %v", spec.peer.LinkID, entry, err)
 		return
 	}
 	defer in.Close()
@@ -73,6 +75,7 @@ func (m *edgeForwardManager) serveLink(entry string, spec forwardLinkSpec) {
 	if spec.exitAgent != "" {
 		out, outReader, err := m.openPeerStream(spec.exitAgent, protocol.StreamForwardPeer, spec.peer)
 		if err != nil {
+			log.Printf("[forward] link %s: exit %s did not accept the peer: %v", spec.peer.LinkID, spec.exitAgent, err)
 			return
 		}
 		defer out.Close()
